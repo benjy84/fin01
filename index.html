@@ -186,12 +186,7 @@
       },
       step()    { tone("triangle", 95, 50, 0.1, 0.3); noise("highpass", 2500, 1500, 0.04, 0.12); },
       pickup()  { tone("sine", 600, 600, 0.07, 0.25); tone("sine", 900, 900, 0.1, 0.25, 0.07); },
-      death()   { tone("sawtooth", 220, 25, 0.9, 0.5); noise("lowpass", 800, 60, 0.7, 0.5); },
-      cleared() {
-        tone("triangle", 330, 330, 0.18, 0.3);
-        tone("triangle", 440, 440, 0.18, 0.3, 0.15);
-        tone("triangle", 660, 660, 0.4, 0.3, 0.3);
-      }
+      death()   { tone("sawtooth", 220, 25, 0.9, 0.5); noise("lowpass", 800, 60, 0.7, 0.5); }
     };
 
     // ---------- Keyboard and mouse ----------
@@ -576,7 +571,7 @@
         spawnTimer = 2;
       }
 
-      if (killed >= ALIENS_TO_KILL && aliens.length === 0) { state = "cleared"; sfx.cleared(); }
+      if (killed >= ALIENS_TO_KILL && aliens.length === 0) state = "cleared";
       if (player.hp <= 0) {
         player.hp = 0;
         state = "dead";
