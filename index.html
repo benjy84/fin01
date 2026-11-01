@@ -44,7 +44,7 @@
 <body>
   <h1>Project Sentinel</h1>
   <canvas id="game" width="320" height="180"></canvas>
-  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; C = crouch &nbsp; J or click = attack &nbsp; mouse wheel or 1 / 2 = switch weapon &nbsp; R = restart</p>
+  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; C = crouch &nbsp; jump on aliens to squash them &nbsp; J or click = attack &nbsp; mouse wheel or 1 / 2 = switch weapon &nbsp; R = restart</p>
 
   <script>
     // =====================================================
@@ -440,6 +440,7 @@
       if (state === "dead") return;
 
       updatePlayer(dt);
+      stompCheck();
       updateAliens(dt);
       updatePellets(dt);
       updatePickups(dt);
@@ -499,6 +500,8 @@
       // Move
       const wasOnGround = p.onGround;
       const fallSpeed = p.vy;                // how fast we were falling (for the landing)
+      p.airborne = !wasOnGround;             // remembered so a stomp can be spotted this frame
+      p.fallSpeed = fallSpeed;
       const oldBottom = p.y + p.h;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
@@ -564,6 +567,29 @@
           if (a.hp <= 0) killAlien(i, p.facing);
           hitStop = 0.06;                   // brief freeze = punch feels powerful
           addShake(0.15, 2);
+        }
+      }
+    }
+
+    // Stomp: landing on top of an alien squashes it, and the Sentinel bounces
+    function stompCheck() {
+      const p = player;
+      if (!p.airborne || p.fallSpeed < 80) return;      // only works while falling
+      const feet = p.y + p.h;
+      for (let i = aliens.length - 1; i >= 0; i--) {
+        const a = aliens[i];
+        const above = p.x + p.w > a.x && p.x < a.x + a.w;   // lined up over the alien
+        if (above && feet >= a.y - 2 && feet <= a.y + 12) {
+          killAlien(i, 1);                                  // blood sprays out to the right...
+          spawnGore(a.x + 8, a.y + 8, -1);                  // ...and to the left
+          for (let k = 0; k < 14; k++) {                    // a puddle on the floor
+            splatCtx.fillStyle = Math.random() < 0.5 ? "#8a1010" : "#a01010";
+            splatCtx.fillRect(Math.floor(a.x - 6 + Math.random() * 28), FLOOR + Math.floor(Math.random() * 4), 2, 1);
+          }
+          p.vy = -230;                                      // bounce off
+          p.onGround = false;
+          hitStop = 0.07;
+          addShake(0.18, 3);
         }
       }
     }
