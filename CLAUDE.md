@@ -1,4 +1,4 @@
-# Forest Runner
+# Lab Wars
 
 A 2D browser game for a parent and their 13 year old son to build together and learn from.
 
