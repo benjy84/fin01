@@ -44,7 +44,7 @@
 <body>
   <h1>Project Sentinel</h1>
   <canvas id="game" width="320" height="180"></canvas>
-  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; C = crouch &nbsp; jump on aliens to squash them &nbsp; J or click = attack &nbsp; mouse wheel or 1 / 2 = switch weapon &nbsp; M = mute &nbsp; R = restart</p>
+  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; C = crouch &nbsp; jump on aliens to squash them &nbsp; J or click = attack &nbsp; mouse wheel or 1 / 2 = switch weapon &nbsp; Enter = next room &nbsp; M = mute &nbsp; R = restart</p>
 
   <script>
     // =====================================================
@@ -55,10 +55,12 @@
     // ---------- Setup ----------
     const canvas = document.getElementById("game");
     const ctx = canvas.getContext("2d");
-    const W = 320;          // game width in pixels
-    const H = 180;          // game height in pixels
-    const FLOOR = 150;      // y position of the top of the floor
-    const ALIENS_TO_KILL = 8; // kill this many to clear the room
+    // These four change from room to room (see the ROOMS list further down)
+    let W = 320;            // width of the whole room in pixels
+    let VW = 320;           // how much of the room you can see at once (the "field of view")
+    let H = 180;            // height of the view in pixels
+    let FLOOR = 150;        // y position of the top of the floor
+    let aliensToKill = 8;   // kill this many to clear the room
     const STAND_HEIGHT = 50;  // how tall the Sentinel is standing...
     const CROUCH_HEIGHT = 32; // ...and crouching
 
@@ -70,16 +72,18 @@
     const splatCtx = splat.getContext("2d");
 
     // A third canvas holds the dark edges of the screen (the "vignette").
-    // It is drawn once here, then pasted on top every frame.
+    // It is drawn once when a room loads, then pasted on top every frame.
     const vignette = document.createElement("canvas");
-    vignette.width = W;
-    vignette.height = H;
     const vctx = vignette.getContext("2d");
-    const fade = vctx.createRadialGradient(W / 2, H / 2, 70, W / 2, H / 2, 210);
-    fade.addColorStop(0, "rgba(0,0,0,0)");
-    fade.addColorStop(1, "rgba(0,0,0,0.6)");
-    vctx.fillStyle = fade;
-    vctx.fillRect(0, 0, W, H);
+    function buildVignette() {
+      vignette.width = VW;
+      vignette.height = H;
+      const fade = vctx.createRadialGradient(VW / 2, H / 2, H * 0.39, VW / 2, H / 2, VW * 0.66);
+      fade.addColorStop(0, "rgba(0,0,0,0)");
+      fade.addColorStop(1, "rgba(0,0,0,0.6)");
+      vctx.fillStyle = fade;
+      vctx.fillRect(0, 0, VW, H);
+    }
 
     // ---------- Sound ----------
     // There are no sound files. Every sound is made in code with the browser's
@@ -178,6 +182,7 @@
       alienDie(){ noise("bandpass", 500, 90, 0.3, 0.55); tone("sawtooth", 320, 70, 0.25, 0.25); },
       alienHit(){ tone("sawtooth", 520, 200, 0.07, 0.12); },
       screech() { tone("sawtooth", 1500, 500, 0.35, 0.07); tone("square", 1100, 400, 0.3, 0.04); },
+      roar()    { tone("sawtooth", 400, 90, 0.6, 0.18); noise("lowpass", 700, 100, 0.5, 0.3); },   // a brute arrives
       hurt()    { tone("square", 110, 55, 0.22, 0.4); noise("lowpass", 1000, 150, 0.15, 0.4); },
       jump()    { tone("triangle", 200, 100, 0.1, 0.25); },
       land(power) {
@@ -205,7 +210,12 @@
       if (e.code === "KeyJ") { punchPressed = true; usedMouse = false; }
       if (e.code === "Digit1") selectWeapon(0);
       if (e.code === "Digit2") selectWeapon(1);
-      if (e.code === "KeyR") startGame();
+      if (e.code === "KeyR") {
+        // R restarts the room. After finishing the last room it starts the game again.
+        if (state === "cleared" && roomIndex === ROOMS.length - 1) loadRoom(0);
+        else loadRoom(roomIndex);
+      }
+      if (e.code === "Enter" && state === "cleared" && roomIndex < ROOMS.length - 1) nextRoom();
       // stop the page from scrolling when pressing space or arrows
       if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) {
         e.preventDefault();
@@ -218,7 +228,7 @@
     // Work out where the mouse is inside the game picture
     function trackMouse(e) {
       const box = canvas.getBoundingClientRect();
-      aimX = (e.clientX - box.left) / box.width * W;
+      aimX = (e.clientX - box.left) / box.width * VW;   // position on screen (add camX for the room)
       aimY = (e.clientY - box.top) / box.height * H;
     }
     canvas.addEventListener("mousemove", trackMouse);
@@ -248,17 +258,65 @@
     let shake = 0;          // how long the screen shakes for (seconds)
     let shakePower = 0;     // how hard it shakes (pixels)
     let animTime = 0;       // keeps counting up, used for flickering and dripping
+    let camX = 0;           // the camera: how far along the room the view has scrolled
+    let roomIndex = 0;      // which room we are in (0 is room 1)
+    let platforms = [];     // platforms you can jump onto (you can jump up through them)
 
-    // Platforms you can jump onto (you can jump up through them)
-    const platforms = [
-      { x: 30,  y: 115, w: 60 },
-      { x: 230, y: 110, w: 60 }
+    // ---------- The rooms ----------
+    // Each room is a list of settings. To make a new room, copy one and change the numbers.
+    const ROOMS = [
+      {
+        name: "LAB 1",
+        worldW: 320, viewW: 320, viewH: 180,   // room size, and how much you can see
+        floor: 150, startX: 148,
+        toKill: 8,                  // aliens to kill to clear the room
+        maxAlive: 3,                // most aliens on screen at once
+        spawnEvery: 2,              // seconds between new aliens
+        bruteEvery: 0,              // every Nth alien is a big brute (0 = none)
+        wall: ["#141b16", "#182019", "#1c241e", "#202a22", "#242e26"],
+        infested: false,
+        platforms: [
+          { x: 30,  y: 115, w: 60 },
+          { x: 230, y: 110, w: 60 }
+        ]
+      },
+      {
+        name: "LAB 2 - THE NEST",
+        worldW: 960, viewW: 480, viewH: 270,   // 3x as wide as lab 1, and you see more of it
+        floor: 240, startX: 40,
+        toKill: 12,
+        maxAlive: 4,
+        spawnEvery: 1.6,
+        bruteEvery: 3,              // every 3rd alien is a brute
+        wall: ["#0f1810", "#131c13", "#172216", "#1b261a", "#1f2a1e"],
+        infested: true,
+        platforms: [                // each one is a short jump above the last
+          { x: 60,  y: 205, w: 80 },
+          { x: 200, y: 170, w: 70 },
+          { x: 340, y: 205, w: 80 },
+          { x: 470, y: 170, w: 90 },
+          { x: 600, y: 135, w: 70 },
+          { x: 730, y: 170, w: 80 },
+          { x: 850, y: 205, w: 80 }
+        ]
+      }
     ];
 
-    // Start (or restart) everything
-    function startGame() {
+    // Load a room. "carry" holds the health, shells and weapon to bring from the last room.
+    function loadRoom(index, carry) {
+      roomIndex = index;
+      const r = ROOMS[index];
+      W = r.worldW;  VW = r.viewW;  H = r.viewH;  FLOOR = r.floor;
+      platforms = r.platforms;
+      aliensToKill = r.toKill;
+      canvas.width = VW;            // changing the canvas size is how the view gets wider
+      canvas.height = H;
+      splat.width = W;              // (this also wipes the blood from the last room)
+      splat.height = H;
+      buildVignette();
+      camX = 0;
       player = {
-        x: 148, y: FLOOR - STAND_HEIGHT, w: 24, h: STAND_HEIGHT,
+        x: r.startX, y: FLOOR - STAND_HEIGHT, w: 24, h: STAND_HEIGHT,
         vx: 0, vy: 0,
         facing: 1,          // 1 = looking right, -1 = looking left
         onGround: true,
@@ -272,6 +330,11 @@
         flash: 0,           // muzzle flash timer
         recoil: 0           // gun kick timer
       };
+      if (carry) {
+        player.hp = carry.hp;
+        player.shells = carry.shells;
+        player.weapon = carry.weapon;
+      }
       aliens = [];
       particles = [];
       pellets = [];
@@ -281,7 +344,27 @@
       hitStop = 0;
       shake = 0;
       state = "play";       // "play", "dead" or "cleared"
-      splatCtx.clearRect(0, 0, W, H);
+    }
+
+    // Go on to the next room, with some health back
+    function nextRoom() {
+      loadRoom(roomIndex + 1, {
+        hp: Math.min(100, player.hp + 30),
+        shells: player.shells,
+        weapon: player.weapon
+      });
+    }
+
+    // Start the game. Adding #room2 to the web address jumps straight to room 2.
+    function startGame() {
+      const wantRoom2 = typeof location !== "undefined" && location.hash === "#room2";
+      loadRoom(wantRoom2 ? 1 : 0);
+    }
+
+    // The camera follows the Sentinel along a wide room
+    function updateCamera(dt) {
+      const target = Math.max(0, Math.min(W - VW, player.x + player.w / 2 - VW / 2));
+      camX += (target - camX) * Math.min(1, dt * 8);
     }
 
     // Shake the screen. A stronger shake replaces a weaker one.
@@ -293,16 +376,27 @@
     }
 
     // ---------- Aliens ----------
+    // A normal alien is 16x14. A brute is the same shape drawn twice as big,
+    // with three times the health, a harder bite, and slower legs.
     function spawnAlien() {
+      const r = ROOMS[roomIndex];
+      const sent = killed + aliens.length;   // how many aliens have been sent so far
+      const brute = r.bruteEvery > 0 && sent % r.bruteEvery === r.bruteEvery - 1;
+      const size = brute ? 2 : 1;
       const fromLeft = Math.random() < 0.5;
-      sfx.screech();                         // a new alien shrieks as it arrives
+      if (brute) sfx.roar(); else sfx.screech();   // a new alien shrieks as it arrives
+      // Aliens appear just off the edge of the screen, on whichever side they come from
       aliens.push({
-        x: fromLeft ? -20 : W + 4,
-        y: FLOOR - 14,
-        w: 16, h: 14,
+        x: fromLeft ? Math.max(-20 * size, camX - 24 * size) : Math.min(W + 4, camX + VW + 8),
+        y: FLOOR - 14 * size,
+        w: 16 * size, h: 14 * size,
+        scale: size,
+        brute: brute,
         vx: 0,
-        speed: 35 + Math.random() * 25,
-        hp: 30,
+        speed: brute ? 28 + Math.random() * 10 : 35 + Math.random() * 25,
+        hp: brute ? 90 : 30,
+        maxHp: brute ? 90 : 30,
+        damage: brute ? 16 : 8,              // how much a bite hurts
         attackCooldown: 0,
         wobble: Math.random() * 6
       });
@@ -440,7 +534,7 @@
       // The J key aims at the nearest alien in front, or straight ahead.
       let tx, ty;
       if (usedMouse) {
-        tx = aimX; ty = aimY;
+        tx = aimX + camX; ty = aimY;      // (add camX: the mouse is on screen, the room may be wider)
       } else {
         let nearest = null;
         for (const a of aliens) {
@@ -527,11 +621,14 @@
     function killAlien(index, dir) {
       const a = aliens[index];
       sfx.alienDie();
-      spawnGore(a.x + 8, a.y + 6, dir);          // gore flies away from the hit
+      spawnGore(a.x + a.w / 2, a.y + a.h / 2, dir);   // gore flies away from the hit
+      if (a.brute) spawnGore(a.x + a.w / 2, a.y + a.h / 2, dir);   // brutes make twice the mess
       aliens.splice(index, 1);
       killed++;
-      // Sometimes it drops a box of shotgun shells
-      if (Math.random() < 0.35) pickups.push({ x: a.x + 4, y: FLOOR - 6, w: 8, h: 6, life: 12 });
+      // Sometimes it drops a box of shotgun shells (brutes nearly always do)
+      if (Math.random() < (a.brute ? 0.9 : 0.35)) {
+        pickups.push({ x: a.x + a.w / 2 - 4, y: FLOOR - 6, w: 8, h: 6, life: 12 });
+      }
     }
 
     // Shell boxes lie on the floor for a while; walk over one to pick it up
@@ -563,15 +660,16 @@
       updatePellets(dt);
       updatePickups(dt);
 
-      // Bring in new aliens, up to 3 at a time, until enough have been sent
+      // Bring in new aliens (a few at a time) until enough have been sent
+      const room = ROOMS[roomIndex];
       spawnTimer -= dt;
       const sent = killed + aliens.length;
-      if (spawnTimer <= 0 && aliens.length < 3 && sent < ALIENS_TO_KILL) {
+      if (spawnTimer <= 0 && aliens.length < room.maxAlive && sent < aliensToKill) {
         spawnAlien();
-        spawnTimer = 2;
+        spawnTimer = room.spawnEvery;
       }
 
-      if (killed >= ALIENS_TO_KILL && aliens.length === 0) state = "cleared";
+      if (killed >= aliensToKill && aliens.length === 0) state = "cleared";
       if (player.hp <= 0) {
         player.hp = 0;
         state = "dead";
@@ -665,7 +763,7 @@
       if (p.recoil > 0) p.recoil -= dt;
       if (punchPressed && p.punchCooldown <= 0 && p.punchTime <= 0) {
         // If the player clicked, face the mouse
-        if (usedMouse) p.facing = aimX < p.x + p.w / 2 ? -1 : 1;
+        if (usedMouse) p.facing = aimX + camX < p.x + p.w / 2 ? -1 : 1;
         if (p.weapon === 0) {
           p.punchTime = 0.001;
           p.punchCooldown = 0.4;
@@ -699,6 +797,7 @@
           sfx.punchHit();
           a.hp -= 35;                      // 35 damage kills an alien (30 hp)
           if (a.hp <= 0) killAlien(i, p.facing);
+          else a.x += p.facing * 6;         // a punch that does not kill still knocks it back
           hitStop = 0.06;                   // brief freeze = punch feels powerful
           addShake(0.15, 2);
         }
@@ -715,9 +814,16 @@
         const above = p.x + p.w > a.x && p.x < a.x + a.w;   // lined up over the alien
         if (above && feet >= a.y - 2 && feet <= a.y + 12) {
           sfx.stomp();
-          killAlien(i, 1);                                  // blood sprays out to the right...
-          spawnGore(a.x + 8, a.y + 8, -1);                  // ...and to the left
-          for (let k = 0; k < 14; k++) {                    // a puddle on the floor
+          a.hp -= a.brute ? 60 : 999;           // a stomp kills a normal alien, but a brute survives one
+          if (a.hp > 0) {
+            spawnBlood(a.x + a.w / 2, a.y + 4, 1, 8);
+            spawnBlood(a.x + a.w / 2, a.y + 4, -1, 8);
+            a.attackCooldown = 0.7;             // stunned for a moment
+          } else {
+            killAlien(i, 1);                                // blood sprays out to the right...
+            spawnGore(a.x + a.w / 2, a.y + a.h / 2, -1);    // ...and to the left
+          }
+          for (let k = 0; a.hp <= 0 && k < 14; k++) {       // a puddle on the floor
             splatCtx.fillStyle = Math.random() < 0.5 ? "#8a1010" : "#a01010";
             splatCtx.fillRect(Math.floor(a.x - 6 + Math.random() * 28), FLOOR + Math.floor(Math.random() * 4), 2, 1);
           }
@@ -740,7 +846,7 @@
         // Bite if touching the Sentinel
         if (a.attackCooldown > 0) a.attackCooldown -= dt;
         if (overlaps(a, p) && a.attackCooldown <= 0 && p.hurtTime <= 0) {
-          p.hp -= 8;
+          p.hp -= a.damage;
           p.hurtTime = 0.5;
           a.attackCooldown = 0.8;
           sfx.hurt();
@@ -763,6 +869,7 @@
         const s = shakePower * 2;
         ctx.translate(Math.round((Math.random() - 0.5) * s), Math.round((Math.random() - 0.5) * s));
       }
+      ctx.translate(-Math.round(camX), 0);   // the camera: slide the room so the Sentinel stays in view
 
       drawBackground();
       ctx.drawImage(splat, 0, 0);          // blood stains
@@ -778,12 +885,53 @@
       drawHud();
     }
 
+    // An observation window with a glowing alien nest inside (x, y = top left corner)
+    function drawWindow(x, y) {
+      ctx.fillStyle = "#26302a";
+      ctx.fillRect(x, y, 104, 46);
+      ctx.fillStyle = "#0a100c";
+      ctx.fillRect(x + 2, y + 2, 100, 42);
+      ctx.fillStyle = "#12261a";
+      ctx.fillRect(x + 2, y + 28, 100, 16);
+      const glow = 0.5 + 0.5 * Math.sin(animTime * 2);     // slow pulsing
+      ctx.fillStyle = glow > 0.5 ? "#2f6a2a" : "#285a24";
+      ctx.fillRect(x + 22, y + 22, 12, 14);
+      ctx.fillRect(x + 42, y + 16, 14, 20);
+      ctx.fillRect(x + 68, y + 24, 10, 12);
+      ctx.fillStyle = "#4c9a3c";
+      ctx.fillRect(x + 46, y + 18, 3, 3);
+      ctx.fillStyle = "#e8c020";                            // a yellow eye in the dark
+      ctx.fillRect(x + 86, y + 12, 2, 2);
+      ctx.fillStyle = "#26302a";
+      ctx.fillRect(x + 50, y + 2, 4, 42);                   // window frame
+      ctx.fillStyle = "#3a463a";
+      ctx.fillRect(x + 2, y + 2, 100, 1);                   // glass shine
+    }
+
+    // A computer terminal with a flickering screen (x, y = top left corner)
+    function drawTerminal(x, y) {
+      ctx.fillStyle = "#222c25";
+      ctx.fillRect(x, y, 22, 32);
+      ctx.fillStyle = "#0a100c";
+      ctx.fillRect(x + 3, y + 3, 16, 12);
+      ctx.fillStyle = Math.sin(animTime * 9) > -0.6 ? "#2f8a3a" : "#1a4a20";
+      ctx.fillRect(x + 5, y + 6, 8, 1);
+      ctx.fillRect(x + 5, y + 9, 11, 1);
+      ctx.fillRect(x + 5, y + 12, 6, 1);
+      ctx.fillStyle = "#38453b";
+      ctx.fillRect(x, y, 22, 1);
+      ctx.fillStyle = "#a01010";                            // warning light
+      ctx.fillRect(x + 17, y + 20, 2, 2);
+    }
+
     function drawBackground() {
+      const room = ROOMS[roomIndex];
+
       // Wall: darker at the top, lighter lower down (drawn in five bands)
-      const bands = ["#141b16", "#182019", "#1c241e", "#202a22", "#242e26"];
-      for (let i = 0; i < bands.length; i++) {
-        ctx.fillStyle = bands[i];
-        ctx.fillRect(0, i * 30, W, 30);
+      const bandH = FLOOR / room.wall.length;
+      for (let i = 0; i < room.wall.length; i++) {
+        ctx.fillStyle = room.wall[i];
+        ctx.fillRect(0, Math.floor(i * bandH), W, Math.ceil(bandH) + 1);
       }
 
       // Wall panels with seams and rivets
@@ -799,50 +947,42 @@
         }
       }
 
-      // A pipe running along the wall
-      ctx.fillStyle = "#222c25";
-      ctx.fillRect(0, 22, W, 6);
-      ctx.fillStyle = "#38453b";
-      ctx.fillRect(0, 22, W, 1);
-      ctx.fillStyle = "#161d18";
-      ctx.fillRect(0, 27, W, 1);
-      ctx.fillStyle = "#2c382f";
-      for (let x = 20; x < W; x += 56) ctx.fillRect(x, 20, 4, 10);   // pipe joints
+      // Pipes running along the wall (a second one lower down in tall rooms)
+      for (let py = 22; py < FLOOR - 40; py += FLOOR > 200 ? 90 : 200) {
+        ctx.fillStyle = "#222c25";
+        ctx.fillRect(0, py, W, 6);
+        ctx.fillStyle = "#38453b";
+        ctx.fillRect(0, py, W, 1);
+        ctx.fillStyle = "#161d18";
+        ctx.fillRect(0, py + 5, W, 1);
+        ctx.fillStyle = "#2c382f";
+        for (let x = 20; x < W; x += 56) ctx.fillRect(x, py - 2, 4, 10);   // pipe joints
+      }
 
-      // Observation window, with a glowing alien nest inside
-      ctx.fillStyle = "#26302a";
-      ctx.fillRect(108, 38, 104, 46);
-      ctx.fillStyle = "#0a100c";
-      ctx.fillRect(110, 40, 100, 42);
-      ctx.fillStyle = "#12261a";
-      ctx.fillRect(110, 66, 100, 16);
-      const glow = 0.5 + 0.5 * Math.sin(animTime * 2);     // slow pulsing
-      ctx.fillStyle = glow > 0.5 ? "#2f6a2a" : "#285a24";
-      ctx.fillRect(130, 60, 12, 14);
-      ctx.fillRect(150, 54, 14, 20);
-      ctx.fillRect(176, 62, 10, 12);
-      ctx.fillStyle = "#4c9a3c";
-      ctx.fillRect(154, 56, 3, 3);
-      ctx.fillStyle = "#e8c020";                            // a yellow eye in the dark
-      ctx.fillRect(194, 50, 2, 2);
-      ctx.fillStyle = "#26302a";
-      ctx.fillRect(158, 40, 4, 42);                         // window frame
-      ctx.fillStyle = "#3a463a";
-      ctx.fillRect(110, 40, 100, 1);                        // glass shine
+      // Windows and terminals repeat every 320 pixels along the room
+      const windowY = Math.round(FLOOR * 0.25);
+      for (let x = 0; x < W; x += 320) {
+        drawWindow(x + 108, windowY);
+        drawTerminal(x + 8, FLOOR - 32);
+      }
 
-      // Computer terminal on the left, with a flickering screen
-      ctx.fillStyle = "#222c25";
-      ctx.fillRect(8, 118, 22, 32);
-      ctx.fillStyle = "#0a100c";
-      ctx.fillRect(11, 121, 16, 12);
-      ctx.fillStyle = Math.sin(animTime * 9) > -0.6 ? "#2f8a3a" : "#1a4a20";
-      ctx.fillRect(13, 124, 8, 1);
-      ctx.fillRect(13, 127, 11, 1);
-      ctx.fillRect(13, 130, 6, 1);
-      ctx.fillStyle = "#38453b";
-      ctx.fillRect(8, 118, 22, 1);
-      ctx.fillStyle = "#a01010";                            // warning light
-      ctx.fillRect(25, 138, 2, 2);
+      // Big patches of alien growth on the walls (only in the infested rooms)
+      if (room.infested) {
+        for (let x = 150; x < W; x += 210) {
+          const top = FLOOR - 95 - ((x * 7) % 25);
+          ctx.fillStyle = "#1f4a1c";
+          ctx.fillRect(x, top, 34, FLOOR - top - 6);
+          ctx.fillRect(x - 8, top + 20, 50, 20);
+          ctx.fillStyle = "#2f6a2a";
+          ctx.fillRect(x + 6, top + 6, 22, FLOOR - top - 24);
+          ctx.fillStyle = "#4c9a3c";
+          ctx.fillRect(x + 12, top + 14, 4, 4);
+          ctx.fillRect(x + 20, top + 30, 3, 3);
+          ctx.fillStyle = Math.sin(animTime * 3 + x) > 0 ? "#e8c020" : "#a08818";   // watching eyes
+          ctx.fillRect(x + 10, top + 24, 2, 2);
+          ctx.fillRect(x + 22, top + 24, 2, 2);
+        }
+      }
 
       // Green alien growth hanging from the ceiling
       ctx.fillStyle = "#2f6a2a";
@@ -856,7 +996,7 @@
 
       // Slime drips falling from the growth
       ctx.fillStyle = "#6ac04a";
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < Math.floor(W / 70); i++) {
         const dripX = 52 + i * 70;
         const dripY = (animTime * 45 + i * 41) % (FLOOR - 24) + 24;
         ctx.fillRect(dripX, Math.round(dripY), 1, 2);
@@ -1009,15 +1149,31 @@
       ctx.fillRect(fistX, fistY, 8, 2);
     }
 
+    // Colours for the two kinds of alien
+    const ALIEN_COLOURS = {
+      legs: "#5a0808", outline: "#8a1010", body: "#c42020", light: "#e04040",
+      shade: "#7a0c0c", spine: "#5a0808", head: "#c42020", eye: "#f8d820"
+    };
+    const BRUTE_COLOURS = {      // darker and heavier
+      legs: "#2a0404", outline: "#4a0808", body: "#8a1414", light: "#b02828",
+      shade: "#4a0808", spine: "#220303", head: "#8a1414", eye: "#ffb020"
+    };
+
+    // Aliens are drawn as if they were 16x14, then scaled up (brutes are scaled by 2)
     function drawAlien(a) {
-      const x = Math.round(a.x), y = Math.round(a.y);
+      const col = a.brute ? BRUTE_COLOURS : ALIEN_COLOURS;
       const step = Math.floor(a.wobble) % 2;         // makes the legs shuffle
       const f = player.x + player.w / 2 > a.x + a.w / 2 ? 1 : -1;   // which way it faces
+
+      ctx.save();
+      ctx.translate(Math.round(a.x), Math.round(a.y));
+      ctx.scale(a.scale, a.scale);
+      const x = 0, y = 0;
 
       ctx.fillStyle = "rgba(0,0,0,0.4)";              // shadow
       ctx.fillRect(x, y + 13, 16, 2);
 
-      ctx.fillStyle = "#5a0808";                      // long bent legs
+      ctx.fillStyle = col.legs;                       // long bent legs
       ctx.fillRect(x + 1 + step, y + 9, 2, 5);
       ctx.fillRect(x + 5 - step, y + 9, 2, 5);
       ctx.fillRect(x + 9 + step, y + 9, 2, 5);
@@ -1028,31 +1184,40 @@
       ctx.fillRect(x + 9 + step, y + 13, 1, 1);
       ctx.fillRect(x + 13 - step, y + 13, 1, 1);
 
-      ctx.fillStyle = "#5a0808";                      // spines along the back
+      ctx.fillStyle = col.spine;                      // spines along the back
       for (let k = 0; k < 3; k++) {
         ctx.fillRect(f === 1 ? x + 1 + k * 3 : x + 14 - k * 3, y + 1 + (k % 2), 1, 3);
       }
 
-      ctx.fillStyle = "#8a1010";                      // body outline
+      ctx.fillStyle = col.outline;                    // body outline
       ctx.fillRect(x, y + 3, 16, 8);
-      ctx.fillStyle = "#c42020";                      // body
+      ctx.fillStyle = col.body;                       // body
       ctx.fillRect(x + 1, y + 4, 14, 6);
-      ctx.fillStyle = "#e04040";                      // highlight on top
+      ctx.fillStyle = col.light;                      // highlight on top
       ctx.fillRect(x + 2, y + 4, 12, 1);
-      ctx.fillStyle = "#7a0c0c";                      // shaded underside
+      ctx.fillStyle = col.shade;                      // shaded underside
       ctx.fillRect(x + 1, y + 9, 14, 1);
 
       const headX = f === 1 ? x + 10 : x;             // head
-      ctx.fillStyle = "#8a1010";
+      ctx.fillStyle = col.outline;
       ctx.fillRect(headX, y, 6, 8);
-      ctx.fillStyle = "#c42020";
+      ctx.fillStyle = col.head;
       ctx.fillRect(headX + 1, y + 1, 4, 6);
       ctx.fillStyle = "#d8d0b8";                      // mandibles
       ctx.fillRect(f === 1 ? headX + 6 : headX - 2, y + 6, 2, 2);
-      ctx.fillStyle = "#f8d820";                      // glowing yellow eye
+      ctx.fillStyle = col.eye;                        // glowing eye
       ctx.fillRect(f === 1 ? headX + 3 : headX + 1, y + 2, 2, 2);
       ctx.fillStyle = "#fff8b0";
       ctx.fillRect(f === 1 ? headX + 4 : headX + 1, y + 2, 1, 1);
+      ctx.restore();
+
+      // Brutes show a small health bar once they have been hurt
+      if (a.brute && a.hp < a.maxHp) {
+        ctx.fillStyle = "#000";
+        ctx.fillRect(Math.round(a.x), Math.round(a.y) - 5, a.w, 3);
+        ctx.fillStyle = "#c42020";
+        ctx.fillRect(Math.round(a.x) + 1, Math.round(a.y) - 4, Math.round((a.w - 2) * a.hp / a.maxHp), 1);
+      }
     }
 
     function drawParticles() {
@@ -1085,8 +1250,8 @@
 
     // The weapon scroll: the only inventory. The selected weapon is highlighted.
     function drawWeaponScroll() {
-      const slotW = 62, gap = 3, y = 163;
-      let x = Math.round((W - (WEAPONS.length * slotW + (WEAPONS.length - 1) * gap)) / 2);
+      const slotW = 62, gap = 3, y = H - 17;
+      let x = Math.round((VW - (WEAPONS.length * slotW + (WEAPONS.length - 1) * gap)) / 2);
       ctx.font = "7px monospace";
       for (let i = 0; i < WEAPONS.length; i++) {
         const selected = i === player.weapon;
@@ -1107,12 +1272,13 @@
       if (hudMessageTime > 0) {
         ctx.textAlign = "center";
         ctx.fillStyle = "#e8c020";
-        ctx.fillText(hudMessage, W / 2, 158);
+        ctx.fillText(hudMessage, VW / 2, H - 22);
       }
     }
 
     function drawHud() {
       drawWeaponScroll();
+
       // Health bar (turns red when low)
       ctx.fillStyle = "#3a463a";
       ctx.fillRect(5, 5, 64, 10);
@@ -1123,23 +1289,33 @@
       ctx.fillStyle = "rgba(255,255,255,0.25)";
       ctx.fillRect(8, 8, Math.round(58 * player.hp / 100), 1);
 
-      // Kill counter
-      ctx.fillStyle = "#b8c4b0";
+      // Room name in the middle, kill counter on the right
       ctx.font = "8px monospace";
+      ctx.fillStyle = "#7a867a";
+      ctx.textAlign = "center";
+      ctx.fillText(ROOMS[roomIndex].name, VW / 2, 12);
+      ctx.fillStyle = "#b8c4b0";
       ctx.textAlign = "right";
-      ctx.fillText("ALIENS " + killed + "/" + ALIENS_TO_KILL, W - 6, 12);
+      ctx.fillText("ALIENS " + killed + "/" + aliensToKill, VW - 6, 12);
 
       // Messages in the middle of the screen
       if (state !== "play") {
+        const mid = Math.round(H / 2);
+        const lastRoom = roomIndex === ROOMS.length - 1;
         ctx.fillStyle = "rgba(0,0,0,0.6)";
-        ctx.fillRect(0, 60, W, 50);
+        ctx.fillRect(0, mid - 30, VW, 50);
         ctx.textAlign = "center";
         ctx.fillStyle = state === "dead" ? "#c42020" : "#7ac05a";
         ctx.font = "16px monospace";
-        ctx.fillText(state === "dead" ? "SENTINEL DOWN" : "ROOM CLEARED", W / 2, 84);
+        let title = "SENTINEL DOWN", hint = "Press R to try again";
+        if (state === "cleared") {
+          title = lastRoom ? "ALL ROOMS CLEARED" : "ROOM CLEARED";
+          hint = lastRoom ? "Press R to play again" : "Press ENTER for the next room";
+        }
+        ctx.fillText(title, VW / 2, mid - 6);
         ctx.fillStyle = "#b8c4b0";
         ctx.font = "8px monospace";
-        ctx.fillText("Press R to play again", W / 2, 100);
+        ctx.fillText(hint, VW / 2, mid + 10);
       }
     }
 
@@ -1151,6 +1327,7 @@
       animTime += dt;
       if (hudMessageTime > 0) hudMessageTime -= dt;
       update(dt);
+      updateCamera(dt);
       draw();
       requestAnimationFrame(loop);
     }

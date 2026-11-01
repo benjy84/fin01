@@ -27,6 +27,7 @@ A 2D browser game for a parent and their 13 year old son to build together and l
 3. One alien that chases the player and dies with a little gore (done).
 4. One small room (done: kill 8 aliens to clear it).
 5. Also done: crouch, shotgun with mouse-wheel weapon scroll, stomp, and sound (all made in code with Web Audio, no sound files; M mutes).
-6. Next: the tear attack; then more enemy types, survivors, outdoor levels and the full 15 levels, one branch at a time.
+6. Rooms: each room is an entry in the `ROOMS` list in `index.html` (size, how much you can see, platforms, enemy mix). Room 2 is 3x wider with a scrolling camera, a bigger field of view (480x270) and large "brute" aliens. Add `#room2` to the web address to jump straight to it; Enter goes to the next room after clearing one.
+7. Next: the tear attack; then more enemy types, survivors, outdoor levels and the full 15 levels, one branch at a time.
 
 The original prompt asked for Godot; we chose plain JavaScript and canvas instead so the game stays a static site on Vercel.
