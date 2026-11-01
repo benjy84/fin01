@@ -26,6 +26,7 @@ A 2D browser game for a parent and their 13 year old son to build together and l
 2. Sentinel that walks, jumps and punches (done, first playable version).
 3. One alien that chases the player and dies with a little gore (done).
 4. One small room (done: kill 8 aliens to clear it).
-5. Next: shoot, stomp and tear attacks; then more enemy types, survivors, outdoor levels and the full 15 levels, one branch at a time.
+5. Also done: crouch, shotgun with mouse-wheel weapon scroll, stomp, and sound (all made in code with Web Audio, no sound files; M mutes).
+6. Next: the tear attack; then more enemy types, survivors, outdoor levels and the full 15 levels, one branch at a time.
 
 The original prompt asked for Godot; we chose plain JavaScript and canvas instead so the game stays a static site on Vercel.
