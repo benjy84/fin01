@@ -28,7 +28,7 @@
     /* The canvas is small (320x180) and stretched up.
        image-rendering keeps the pixels sharp instead of blurry. */
     canvas {
-      width: min(90vw, 160vh);
+      width: min(90vw, 150vh);
       aspect-ratio: 16 / 9;
       image-rendering: pixelated;
       border: 2px solid #3a463a;
@@ -44,33 +44,439 @@
 <body>
   <h1>Project Sentinel</h1>
   <canvas id="game" width="320" height="180"></canvas>
-  <p>Work in progress - nothing to play yet</p>
+  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; J or click = punch &nbsp; R = restart</p>
 
   <script>
-    // Get the canvas and its drawing tool (the "context")
+    // =====================================================
+    // PROJECT SENTINEL - first playable version
+    // Everything is drawn with simple coloured rectangles.
+    // =====================================================
+
+    // ---------- Setup ----------
     const canvas = document.getElementById("game");
     const ctx = canvas.getContext("2d");
+    const W = 320;          // game width in pixels
+    const H = 180;          // game height in pixels
+    const FLOOR = 150;      // y position of the top of the floor
+    const ALIENS_TO_KILL = 8; // kill this many to clear the room
 
-    // Draw one frame of the picture
-    function draw() {
-      // Dark laboratory wall
-      ctx.fillStyle = "#1c241e";
-      ctx.fillRect(0, 0, 320, 180);
+    // A second, invisible canvas that remembers blood on the floor and walls.
+    // Blood is drawn on it once and stays there, which keeps the game fast.
+    const splat = document.createElement("canvas");
+    splat.width = W;
+    splat.height = H;
+    const splatCtx = splat.getContext("2d");
 
-      // Metal floor
-      ctx.fillStyle = "#3a403c";
-      ctx.fillRect(0, 150, 320, 30);
+    // ---------- Keyboard and mouse ----------
+    const keys = {};        // keys[name] is true while that key is held down
+    let punchPressed = false; // set to true when the player asks to punch
 
-      // Placeholder Sentinel: a big armoured block (x, y, width, height)
-      ctx.fillStyle = "#5a665a";   // body armour
-      ctx.fillRect(140, 100, 24, 50);
-      ctx.fillStyle = "#3d4a3d";   // helmet
-      ctx.fillRect(144, 90, 16, 12);
-      ctx.fillStyle = "#101410";   // dark visor
-      ctx.fillRect(147, 94, 10, 3);
+    window.addEventListener("keydown", function (e) {
+      keys[e.code] = true;
+      if (e.code === "KeyJ") punchPressed = true;
+      if (e.code === "KeyR") startGame();
+      // stop the page from scrolling when pressing space or arrows
+      if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.code)) {
+        e.preventDefault();
+      }
+    });
+    window.addEventListener("keyup", function (e) {
+      keys[e.code] = false;
+    });
+
+    // Clicking the game punches towards wherever the mouse is
+    let mouseX = null;      // mouse x position inside the game (0-320)
+    canvas.addEventListener("mousedown", function (e) {
+      const box = canvas.getBoundingClientRect();
+      mouseX = (e.clientX - box.left) / box.width * W;
+      punchPressed = true;
+    });
+
+    // ---------- Game state ----------
+    let player, aliens, particles, state, killed, spawnTimer, hitStop, shake;
+
+    // Platforms you can jump onto (you can jump up through them)
+    const platforms = [
+      { x: 30,  y: 115, w: 60 },
+      { x: 230, y: 110, w: 60 }
+    ];
+
+    // Start (or restart) everything
+    function startGame() {
+      player = {
+        x: 148, y: FLOOR - 50, w: 24, h: 50,
+        vx: 0, vy: 0,
+        facing: 1,          // 1 = looking right, -1 = looking left
+        onGround: true,
+        hp: 100,
+        punchTime: 0,       // counts up while punching
+        punchCooldown: 0,
+        hurtTime: 0         // short invincibility after being hit
+      };
+      aliens = [];
+      particles = [];
+      killed = 0;
+      spawnTimer = 1;
+      hitStop = 0;
+      shake = 0;
+      state = "play";       // "play", "dead" or "cleared"
+      splatCtx.clearRect(0, 0, W, H);
     }
 
-    draw();
+    // ---------- Aliens ----------
+    function spawnAlien() {
+      const fromLeft = Math.random() < 0.5;
+      aliens.push({
+        x: fromLeft ? -20 : W + 4,
+        y: FLOOR - 14,
+        w: 16, h: 14,
+        vx: 0,
+        speed: 35 + Math.random() * 25,
+        hp: 30,
+        attackCooldown: 0,
+        wobble: Math.random() * 6
+      });
+    }
+
+    // ---------- Gore ----------
+    // Particles are tiny bits of blood or body parts (giblets).
+    function spawnGore(x, y, dir) {
+      // small blood droplets
+      for (let i = 0; i < 25; i++) {
+        particles.push({
+          x: x, y: y,
+          vx: dir * (30 + Math.random() * 110) + (Math.random() - 0.5) * 60,
+          vy: -Math.random() * 120,
+          life: 0.6 + Math.random() * 0.8,
+          size: 1,
+          color: Math.random() < 0.5 ? "#a01010" : "#c42020",
+          giblet: false
+        });
+      }
+      // bigger chunks
+      for (let i = 0; i < 6; i++) {
+        particles.push({
+          x: x, y: y,
+          vx: dir * (40 + Math.random() * 90) + (Math.random() - 0.5) * 40,
+          vy: -40 - Math.random() * 110,
+          life: 2.5,
+          size: 2 + Math.floor(Math.random() * 2),
+          color: Math.random() < 0.5 ? "#7a0c0c" : "#d8b020", // red flesh or yellow eye
+          giblet: true
+        });
+      }
+      // never let there be too many (keeps the game fast)
+      if (particles.length > 400) particles.splice(0, particles.length - 400);
+    }
+
+    function updateParticles(dt) {
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.vy += 500 * dt;           // gravity
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+
+        // Hit the floor: blood leaves a stain, giblets bounce then stop
+        if (p.y >= FLOOR + 1) {
+          if (p.giblet) {
+            p.y = FLOOR + 1;
+            p.vy = -p.vy * 0.3;
+            p.vx *= 0.6;
+            if (Math.abs(p.vy) < 10) { p.vy = 0; p.vx = 0; }
+          } else {
+            splatCtx.fillStyle = p.color;
+            splatCtx.fillRect(Math.floor(p.x), FLOOR + Math.floor(Math.random() * 4), 2, 1);
+            particles.splice(i, 1);
+            continue;
+          }
+        }
+        // Hit a wall (edge of the screen): leave a stain on the wall
+        if (p.x < 0 || p.x > W) {
+          splatCtx.fillStyle = p.color;
+          splatCtx.fillRect(p.x < 0 ? 0 : W - 2, Math.floor(p.y), 2, 2);
+          particles.splice(i, 1);
+          continue;
+        }
+        if (p.life <= 0) particles.splice(i, 1);
+      }
+    }
+
+    // ---------- Updating the game (runs every frame) ----------
+    function update(dt) {
+      if (hitStop > 0) { hitStop -= dt; return; }  // tiny freeze when a punch lands
+      if (shake > 0) shake -= dt;
+      updateParticles(dt);
+      if (state === "dead") return;
+
+      updatePlayer(dt);
+      updateAliens(dt);
+
+      // Bring in new aliens, up to 3 at a time, until enough have been sent
+      spawnTimer -= dt;
+      const sent = killed + aliens.length;
+      if (spawnTimer <= 0 && aliens.length < 3 && sent < ALIENS_TO_KILL) {
+        spawnAlien();
+        spawnTimer = 2;
+      }
+
+      if (killed >= ALIENS_TO_KILL && aliens.length === 0) state = "cleared";
+      if (player.hp <= 0) {
+        player.hp = 0;
+        state = "dead";
+        spawnGore(player.x + 12, player.y + 20, 0);
+      }
+    }
+
+    function updatePlayer(dt) {
+      const p = player;
+      const left = keys["KeyA"] || keys["ArrowLeft"];
+      const right = keys["KeyD"] || keys["ArrowRight"];
+      const jump = keys["KeyW"] || keys["ArrowUp"] || keys["Space"];
+
+      // Walking: speed up and slow down gradually so the Sentinel feels heavy
+      const maxSpeed = 80;
+      if (left && !right)       { p.vx -= 500 * dt; p.facing = -1; }
+      else if (right && !left)  { p.vx += 500 * dt; p.facing = 1; }
+      else {
+        // slow down when no key is held
+        const slow = 600 * dt;
+        if (Math.abs(p.vx) <= slow) p.vx = 0; else p.vx -= Math.sign(p.vx) * slow;
+      }
+      p.vx = Math.max(-maxSpeed, Math.min(maxSpeed, p.vx));
+
+      // Jumping (heavy: strong gravity, so it is a short, quick hop)
+      if (jump && p.onGround) { p.vy = -330; p.onGround = false; }
+      p.vy += 1100 * dt;
+
+      // Move
+      const oldBottom = p.y + p.h;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.x = Math.max(0, Math.min(W - p.w, p.x));
+
+      // Land on the floor or on a platform
+      p.onGround = false;
+      if (p.y + p.h >= FLOOR) {
+        p.y = FLOOR - p.h; p.vy = 0; p.onGround = true;
+      } else if (p.vy >= 0) {
+        for (const pl of platforms) {
+          const overlapsX = p.x + p.w > pl.x && p.x < pl.x + pl.w;
+          if (overlapsX && oldBottom <= pl.y + 1 && p.y + p.h >= pl.y) {
+            p.y = pl.y - p.h; p.vy = 0; p.onGround = true;
+          }
+        }
+      }
+
+      // Punching: wind-up, then a short moment where the fist can hit
+      if (p.punchCooldown > 0) p.punchCooldown -= dt;
+      if (p.hurtTime > 0) p.hurtTime -= dt;
+      if (punchPressed && p.punchCooldown <= 0 && p.punchTime <= 0) {
+        // If the player clicked, face the mouse
+        if (mouseX !== null) { p.facing = mouseX < p.x + p.w / 2 ? -1 : 1; mouseX = null; }
+        p.punchTime = 0.001;
+        p.punchCooldown = 0.4;
+        p.punchHit = false;
+      }
+      punchPressed = false;
+      if (p.punchTime > 0) {
+        p.punchTime += dt;
+        const active = p.punchTime > 0.06 && p.punchTime < 0.18;
+        if (active && !p.punchHit) doPunch();
+        if (p.punchTime > 0.3) p.punchTime = 0;
+      }
+    }
+
+    // Check which aliens the fist touches
+    function doPunch() {
+      const p = player;
+      // The punch box sits in front of the Sentinel
+      const fist = {
+        x: p.facing === 1 ? p.x + p.w : p.x - 22,
+        y: p.y + 14, w: 22, h: 36   // reaches down to the feet, because aliens are low
+      };
+      for (let i = aliens.length - 1; i >= 0; i--) {
+        const a = aliens[i];
+        if (overlaps(fist, a)) {
+          p.punchHit = true;
+          a.hp -= 35;                       // 35 damage kills an alien (30 hp)
+          if (a.hp <= 0) {
+            spawnGore(a.x + 8, a.y + 6, p.facing);   // gore flies away from the punch
+            aliens.splice(i, 1);
+            killed++;
+          }
+          hitStop = 0.06;                   // brief freeze = punch feels powerful
+          shake = 0.15;
+        }
+      }
+    }
+
+    function updateAliens(dt) {
+      const p = player;
+      for (const a of aliens) {
+        a.wobble += dt * 12;
+        // Run towards the Sentinel
+        const dx = (p.x + p.w / 2) - (a.x + a.w / 2);
+        if (Math.abs(dx) > 10) a.x += Math.sign(dx) * a.speed * dt;
+
+        // Bite if touching the Sentinel
+        if (a.attackCooldown > 0) a.attackCooldown -= dt;
+        if (overlaps(a, p) && a.attackCooldown <= 0 && p.hurtTime <= 0) {
+          p.hp -= 8;
+          p.hurtTime = 0.5;
+          a.attackCooldown = 0.8;
+          p.vx = Math.sign(dx) * -60;    // small shove (the Sentinel is heavy, so it is small)
+          shake = 0.1;
+        }
+      }
+    }
+
+    // Do two boxes (x, y, w, h) overlap?
+    function overlaps(a, b) {
+      return a.x < b.x + b.w && a.x + a.w > b.x &&
+             a.y < b.y + b.h && a.y + a.h > b.y;
+    }
+
+    // ---------- Drawing (runs every frame) ----------
+    function draw() {
+      ctx.save();
+      if (shake > 0) ctx.translate(Math.round((Math.random() - 0.5) * 4), Math.round((Math.random() - 0.5) * 4));
+
+      drawBackground();
+      ctx.drawImage(splat, 0, 0);          // blood stains
+      for (const pl of platforms) drawPlatform(pl);
+      for (const a of aliens) drawAlien(a);
+      if (state !== "dead") drawSentinel();
+      drawParticles();
+      ctx.restore();
+
+      drawHud();
+    }
+
+    function drawBackground() {
+      // Dark laboratory wall
+      ctx.fillStyle = "#1c241e";
+      ctx.fillRect(0, 0, W, H);
+      // Wall panels
+      ctx.fillStyle = "#18201a";
+      for (let x = 0; x < W; x += 64) ctx.fillRect(x, 0, 2, FLOOR);
+      // A dark window
+      ctx.fillStyle = "#0c120e";
+      ctx.fillRect(110, 30, 100, 40);
+      ctx.fillStyle = "#26302a";
+      ctx.fillRect(110, 30, 100, 2);
+      ctx.fillRect(158, 30, 4, 40);
+      // Green alien growth hanging from the ceiling, with slime drips
+      ctx.fillStyle = "#2f6a2a";
+      for (let x = 0; x < W; x += 20) {
+        const len = 8 + ((x * 7) % 23);
+        ctx.fillRect(x, 0, 6, len);
+        ctx.fillRect(x + 2, len, 2, 4);
+      }
+      ctx.fillStyle = "#4c9a3c";
+      for (let x = 10; x < W; x += 40) ctx.fillRect(x, 0, 3, 6 + ((x * 3) % 10));
+      // Metal floor
+      ctx.fillStyle = "#3a403c";
+      ctx.fillRect(0, FLOOR, W, H - FLOOR);
+      ctx.fillStyle = "#4a524c";
+      ctx.fillRect(0, FLOOR, W, 1);
+    }
+
+    function drawPlatform(pl) {
+      ctx.fillStyle = "#4a524c";
+      ctx.fillRect(pl.x, pl.y, pl.w, 4);
+      ctx.fillStyle = "#2f6a2a";             // green growth on top
+      ctx.fillRect(pl.x + 4, pl.y - 1, 14, 1);
+      ctx.fillRect(pl.x + pl.w - 20, pl.y - 1, 10, 1);
+    }
+
+    function drawSentinel() {
+      const p = player;
+      // Flash when hurt
+      if (p.hurtTime > 0 && Math.floor(p.hurtTime * 20) % 2 === 0) return;
+      const x = Math.round(p.x), y = Math.round(p.y);
+      ctx.fillStyle = "#3d4a3d";   // legs
+      ctx.fillRect(x + 3, y + 36, 8, 14);
+      ctx.fillRect(x + 13, y + 36, 8, 14);
+      ctx.fillStyle = "#5a665a";   // body armour
+      ctx.fillRect(x, y + 12, 24, 26);
+      ctx.fillStyle = "#74827a";   // shoulder plates
+      ctx.fillRect(x - 2, y + 12, 8, 8);
+      ctx.fillRect(x + 18, y + 12, 8, 8);
+      ctx.fillStyle = "#3d4a3d";   // helmet
+      ctx.fillRect(x + 4, y, 16, 14);
+      ctx.fillStyle = "#101410";   // visor (on the side the Sentinel faces)
+      ctx.fillRect(p.facing === 1 ? x + 10 : x + 5, y + 4, 9, 3);
+      // Fist: shoots out in front while punching
+      let reach = 0;
+      if (p.punchTime > 0) reach = p.punchTime > 0.06 && p.punchTime < 0.18 ? 22 : 8;
+      ctx.fillStyle = "#74827a";
+      const fistX = p.facing === 1 ? x + 22 + reach : x + 2 - reach - 6;
+      ctx.fillRect(fistX, y + 18, 8, 8);
+    }
+
+    function drawAlien(a) {
+      const x = Math.round(a.x), y = Math.round(a.y);
+      const step = Math.floor(a.wobble) % 2;         // makes the legs shuffle
+      const face = player.x + player.w / 2 > a.x + a.w / 2 ? 1 : -1;
+      ctx.fillStyle = "#7a0c0c";                      // legs and claws
+      ctx.fillRect(x + 1 + step, y + 10, 2, 4);
+      ctx.fillRect(x + 6 - step, y + 10, 2, 4);
+      ctx.fillRect(x + 11 + step, y + 10, 2, 4);
+      ctx.fillStyle = "#c42020";                      // body
+      ctx.fillRect(x + 1, y + 4, 14, 7);
+      ctx.fillRect(face === 1 ? x + 10 : x, y + 1, 6, 7);  // head
+      ctx.fillStyle = "#e8c020";                      // yellow eye
+      ctx.fillRect(face === 1 ? x + 13 : x + 2, y + 3, 2, 2);
+      ctx.fillStyle = "#e0e0d0";                      // front claw
+      ctx.fillRect(face === 1 ? x + 16 : x - 2, y + 8, 2, 2);
+    }
+
+    function drawParticles() {
+      for (const p of particles) {
+        ctx.fillStyle = p.color;
+        ctx.fillRect(Math.round(p.x), Math.round(p.y), p.size, p.size);
+      }
+    }
+
+    function drawHud() {
+      // Health bar
+      ctx.fillStyle = "#000";
+      ctx.fillRect(6, 6, 62, 8);
+      ctx.fillStyle = "#3a6a2a";
+      ctx.fillRect(8, 8, Math.round(58 * player.hp / 100), 4);
+      // Kill counter
+      ctx.fillStyle = "#b8c4b0";
+      ctx.font = "8px monospace";
+      ctx.textAlign = "right";
+      ctx.fillText("ALIENS " + killed + "/" + ALIENS_TO_KILL, W - 6, 12);
+
+      // Messages in the middle of the screen
+      if (state !== "play") {
+        ctx.fillStyle = "rgba(0,0,0,0.6)";
+        ctx.fillRect(0, 60, W, 50);
+        ctx.textAlign = "center";
+        ctx.fillStyle = state === "dead" ? "#c42020" : "#7ac05a";
+        ctx.font = "16px monospace";
+        ctx.fillText(state === "dead" ? "SENTINEL DOWN" : "ROOM CLEARED", W / 2, 84);
+        ctx.fillStyle = "#b8c4b0";
+        ctx.font = "8px monospace";
+        ctx.fillText("Press R to play again", W / 2, 100);
+      }
+    }
+
+    // ---------- The game loop ----------
+    let lastTime = performance.now();
+    function loop(now) {
+      const dt = Math.min((now - lastTime) / 1000, 0.05);  // seconds since last frame
+      lastTime = now;
+      update(dt);
+      draw();
+      requestAnimationFrame(loop);
+    }
+
+    startGame();
+    requestAnimationFrame(loop);
   </script>
 </body>
 </html>

@@ -22,10 +22,10 @@ A 2D browser game for a parent and their 13 year old son to build together and l
 - Pixel grid: draw at 320x180 and scale up, so everything keeps a consistent pixel-art look.
 
 ## Build order
-1. Basic page with the canvas (done first).
-2. Sentinel that walks, jumps and punches.
-3. One alien that chases the player and dies with a little gore.
-4. One small room.
-5. Then the other attacks, more enemies, survivors, outdoor levels and the full 15 levels, one branch at a time.
+1. Basic page with the canvas (done).
+2. Sentinel that walks, jumps and punches (done, first playable version).
+3. One alien that chases the player and dies with a little gore (done).
+4. One small room (done: kill 8 aliens to clear it).
+5. Next: shoot, stomp and tear attacks; then more enemy types, survivors, outdoor levels and the full 15 levels, one branch at a time.
 
 The original prompt asked for Godot; we chose plain JavaScript and canvas instead so the game stays a static site on Vercel.
