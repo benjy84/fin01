@@ -44,7 +44,7 @@
 <body>
   <h1>Project Sentinel</h1>
   <canvas id="game" width="320" height="180"></canvas>
-  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; C = crouch &nbsp; jump on aliens to squash them &nbsp; J or click = attack &nbsp; mouse wheel or 1 / 2 = switch weapon &nbsp; R = restart</p>
+  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; C = crouch &nbsp; jump on aliens to squash them &nbsp; J or click = attack &nbsp; mouse wheel or 1 / 2 = switch weapon &nbsp; M = mute &nbsp; R = restart</p>
 
   <script>
     // =====================================================
@@ -81,16 +81,132 @@
     vctx.fillStyle = fade;
     vctx.fillRect(0, 0, W, H);
 
+    // ---------- Sound ----------
+    // There are no sound files. Every sound is made in code with the browser's
+    // Web Audio: a "tone" is a beep that slides from one pitch to another, and
+    // "noise" is a burst of hiss (good for bangs, thuds and squelches).
+    let audio = null;       // the audio system (made on the first key press or click)
+    let muted = false;      // press M to switch the sound off and on
+    let noiseBuffer = null; // a second of random hiss that noise sounds are cut from
+
+    // Browsers only allow sound after the player has pressed a key or clicked
+    function initAudio() {
+      if (audio) {
+        if (audio.state === "suspended") audio.resume();
+        return;
+      }
+      try {
+        audio = new (window.AudioContext || window.webkitAudioContext)();
+        noiseBuffer = audio.createBuffer(1, audio.sampleRate, audio.sampleRate);
+        const data = noiseBuffer.getChannelData(0);
+        for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+        startAmbience();
+      } catch (err) {
+        audio = null;       // no sound available: the game still works fine
+      }
+    }
+
+    // A beep that slides from pitch "from" to pitch "to" (in Hz) and fades out
+    function tone(type, from, to, length, volume, delay) {
+      if (!audio || muted) return;
+      const t = audio.currentTime + (delay || 0);
+      const osc = audio.createOscillator();
+      const gain = audio.createGain();
+      osc.type = type;                                  // "sine", "square", "sawtooth" or "triangle"
+      osc.frequency.setValueAtTime(from, t);
+      osc.frequency.exponentialRampToValueAtTime(Math.max(to, 1), t + length);
+      gain.gain.setValueAtTime(volume, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + length);
+      osc.connect(gain);
+      gain.connect(audio.destination);
+      osc.start(t);
+      osc.stop(t + length);
+    }
+
+    // A burst of hiss, filtered so it sounds like a bang (low) or a clank (high)
+    function noise(filterType, from, to, length, volume, delay) {
+      if (!audio || muted) return;
+      const t = audio.currentTime + (delay || 0);
+      const src = audio.createBufferSource();
+      const filter = audio.createBiquadFilter();
+      const gain = audio.createGain();
+      src.buffer = noiseBuffer;
+      filter.type = filterType;                         // "lowpass", "highpass" or "bandpass"
+      filter.frequency.setValueAtTime(from, t);
+      filter.frequency.exponentialRampToValueAtTime(Math.max(to, 1), t + length);
+      gain.gain.setValueAtTime(volume, t);
+      gain.gain.exponentialRampToValueAtTime(0.001, t + length);
+      src.connect(filter);
+      filter.connect(gain);
+      gain.connect(audio.destination);
+      src.start(t);
+      src.stop(t + length);
+    }
+
+    // Quiet background: a low machine hum that slowly wobbles
+    function startAmbience() {
+      const hum = audio.createOscillator();
+      const hum2 = audio.createOscillator();
+      const gain = audio.createGain();
+      const wobble = audio.createOscillator();
+      const wobbleSize = audio.createGain();
+      hum.type = "sine";     hum.frequency.value = 55;
+      hum2.type = "triangle"; hum2.frequency.value = 82.5;
+      gain.gain.value = 0.035;
+      wobble.frequency.value = 0.15;
+      wobbleSize.gain.value = 0.015;
+      wobble.connect(wobbleSize);
+      wobbleSize.connect(gain.gain);
+      hum.connect(gain);
+      hum2.connect(gain);
+      gain.connect(audio.destination);
+      hum.start(); hum2.start(); wobble.start();
+    }
+
+    // All the game's sounds, in one place so they are easy to find and change
+    const sfx = {
+      swing()   { noise("bandpass", 1200, 400, 0.1, 0.12); },
+      punchHit(){ tone("sine", 140, 45, 0.18, 0.7); noise("lowpass", 900, 150, 0.14, 0.5); },
+      shotgun() {
+        noise("lowpass", 4000, 250, 0.4, 0.9);
+        tone("sine", 110, 30, 0.35, 0.8);
+        tone("square", 220, 150, 0.03, 0.15, 0.32);     // pumping the shotgun: two clicks
+        tone("square", 160, 110, 0.04, 0.15, 0.42);
+      },
+      empty()   { tone("square", 320, 260, 0.04, 0.15); },
+      stomp()   { tone("sine", 160, 35, 0.3, 0.9); noise("lowpass", 1400, 100, 0.3, 0.7); },
+      alienDie(){ noise("bandpass", 500, 90, 0.3, 0.55); tone("sawtooth", 320, 70, 0.25, 0.25); },
+      alienHit(){ tone("sawtooth", 520, 200, 0.07, 0.12); },
+      screech() { tone("sawtooth", 1500, 500, 0.35, 0.07); tone("square", 1100, 400, 0.3, 0.04); },
+      hurt()    { tone("square", 110, 55, 0.22, 0.4); noise("lowpass", 1000, 150, 0.15, 0.4); },
+      jump()    { tone("triangle", 200, 100, 0.1, 0.25); },
+      land(power) {
+        tone("sine", 90, 35, 0.2, Math.min(0.8, 0.3 + power / 600));
+        noise("highpass", 3000, 1500, 0.06, 0.15);      // a metal clank
+      },
+      step()    { tone("triangle", 95, 50, 0.1, 0.3); noise("highpass", 2500, 1500, 0.04, 0.12); },
+      pickup()  { tone("sine", 600, 600, 0.07, 0.25); tone("sine", 900, 900, 0.1, 0.25, 0.07); },
+      death()   { tone("sawtooth", 220, 25, 0.9, 0.5); noise("lowpass", 800, 60, 0.7, 0.5); },
+      cleared() {
+        tone("triangle", 330, 330, 0.18, 0.3);
+        tone("triangle", 440, 440, 0.18, 0.3, 0.15);
+        tone("triangle", 660, 660, 0.4, 0.3, 0.3);
+      }
+    };
+
     // ---------- Keyboard and mouse ----------
     const keys = {};        // keys[name] is true while that key is held down
     let punchPressed = false; // set to true when the player attacks (punch or shoot)
     let usedMouse = false;    // true if the last attack was a mouse click (so we aim at the mouse)
     let aimX = W / 2;         // where the mouse is inside the game (0-320)
     let aimY = FLOOR;         // ...and how far down (0-180)
-    let lastWheel = -1;      // stops the wheel switching weapons too fast
+    let lastHitSound = 0;     // stops the "alien hit" sound playing 7 times for one shotgun blast
+    let lastWheel = -1;     // stops the wheel switching weapons too fast
 
     window.addEventListener("keydown", function (e) {
       keys[e.code] = true;
+      initAudio();
+      if (e.code === "KeyM") muted = !muted;
       if (e.code === "KeyJ") { punchPressed = true; usedMouse = false; }
       if (e.code === "Digit1") selectWeapon(0);
       if (e.code === "Digit2") selectWeapon(1);
@@ -114,6 +230,7 @@
 
     // Clicking the game attacks towards wherever the mouse is
     canvas.addEventListener("mousedown", function (e) {
+      initAudio();
       trackMouse(e);
       usedMouse = true;
       punchPressed = true;
@@ -183,6 +300,7 @@
     // ---------- Aliens ----------
     function spawnAlien() {
       const fromLeft = Math.random() < 0.5;
+      sfx.screech();                         // a new alien shrieks as it arrives
       aliens.push({
         x: fromLeft ? -20 : W + 4,
         y: FLOOR - 14,
@@ -312,11 +430,13 @@
       const p = player;
       if (p.shells <= 0) {
         showMessage("OUT OF SHELLS - SCROLL TO FISTS");
+        sfx.empty();
         p.punchCooldown = 0.3;
         return;
       }
       p.shells--;
-      p.punchCooldown = 0.7;       // pumping the shotgun takes time
+      sfx.shotgun();
+      p.punchCooldown = 0.7;      // pumping the shotgun takes time
       p.flash = 0.06;
       p.recoil = 0.12;
       const m = muzzle(p);
@@ -379,6 +499,7 @@
                 addShake(0.12, 2);
               } else {
                 spawnBlood(b.x, b.y, dir, 4);
+                if (animTime - lastHitSound > 0.06) { sfx.alienHit(); lastHitSound = animTime; }
               }
               hit = true;
               break;
@@ -410,6 +531,7 @@
     // Kill an alien (used by punches and by the shotgun)
     function killAlien(index, dir) {
       const a = aliens[index];
+      sfx.alienDie();
       spawnGore(a.x + 8, a.y + 6, dir);          // gore flies away from the hit
       aliens.splice(index, 1);
       killed++;
@@ -425,6 +547,7 @@
         if (overlaps(s, player)) {
           player.shells = Math.min(MAX_SHELLS, player.shells + 4);
           showMessage("+4 SHELLS");
+          sfx.pickup();
           pickups.splice(i, 1);
         } else if (s.life <= 0) {
           pickups.splice(i, 1);
@@ -453,10 +576,11 @@
         spawnTimer = 2;
       }
 
-      if (killed >= ALIENS_TO_KILL && aliens.length === 0) state = "cleared";
+      if (killed >= ALIENS_TO_KILL && aliens.length === 0) { state = "cleared"; sfx.cleared(); }
       if (player.hp <= 0) {
         player.hp = 0;
         state = "dead";
+        sfx.death();
         spawnGore(player.x + 12, player.y + 20, 0);
       }
     }
@@ -493,6 +617,7 @@
         p.vy = -330;
         p.onGround = false;
         addShake(0.06, 1);                                  // small shake on take-off
+        sfx.jump();
         spawnDust(p.x + p.w / 2, p.y + p.h, 6);
       }
       p.vy += 1100 * dt;
@@ -520,9 +645,21 @@
         }
       }
 
+      // Heavy footsteps while walking on the ground (slower when crouching)
+      if (p.onGround && Math.abs(p.vx) > 20) {
+        p.stepTimer = (p.stepTimer || 0) - dt;
+        if (p.stepTimer <= 0) {
+          sfx.step();
+          p.stepTimer = p.crouching ? 0.5 : 0.32;
+        }
+      } else {
+        p.stepTimer = 0;
+      }
+
       // Just landed? Shake the screen (harder for a longer fall) and kick up dust
       if (p.onGround && !wasOnGround && fallSpeed > 120) {
         addShake(0.12, fallSpeed > 300 ? 2 : 1);
+        sfx.land(fallSpeed);
         spawnDust(p.x + p.w / 2, p.y + p.h, 10);
       }
 
@@ -538,6 +675,7 @@
           p.punchTime = 0.001;
           p.punchCooldown = 0.4;
           p.punchHit = false;
+          sfx.swing();
         } else {
           shoot();
         }
@@ -563,7 +701,8 @@
         const a = aliens[i];
         if (overlaps(fist, a)) {
           p.punchHit = true;
-          a.hp -= 35;                       // 35 damage kills an alien (30 hp)
+          sfx.punchHit();
+          a.hp -= 35;                      // 35 damage kills an alien (30 hp)
           if (a.hp <= 0) killAlien(i, p.facing);
           hitStop = 0.06;                   // brief freeze = punch feels powerful
           addShake(0.15, 2);
@@ -580,6 +719,7 @@
         const a = aliens[i];
         const above = p.x + p.w > a.x && p.x < a.x + a.w;   // lined up over the alien
         if (above && feet >= a.y - 2 && feet <= a.y + 12) {
+          sfx.stomp();
           killAlien(i, 1);                                  // blood sprays out to the right...
           spawnGore(a.x + 8, a.y + 8, -1);                  // ...and to the left
           for (let k = 0; k < 14; k++) {                    // a puddle on the floor
@@ -608,6 +748,7 @@
           p.hp -= 8;
           p.hurtTime = 0.5;
           a.attackCooldown = 0.8;
+          sfx.hurt();
           p.vx = Math.sign(dx) * -60;    // small shove (the Sentinel is heavy, so it is small)
           addShake(0.1, 2);
         }
