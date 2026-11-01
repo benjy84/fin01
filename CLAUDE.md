@@ -1,4 +1,4 @@
-# Lab Wars
+# Project Sentinel
 
 A 2D browser game for a parent and their 13 year old son to build together and learn from.
 
@@ -8,3 +8,24 @@ A 2D browser game for a parent and their 13 year old son to build together and l
 - Controls are keyboard and mouse.
 - Commit after each working change with a clear message.
 - Work on a branch for each new feature, and keep `main` always playable.
+- Build in small steps: get one thing working before adding the next.
+
+## Game design (from the son's original prompt)
+- Reverse-horror, pixel-art, side-scrolling action game with some platforming. The player is the thing the enemies should fear.
+- Player: the Sentinel, a huge armoured super-soldier. Dirty greys and dark greens, helmet hides the face. Movement should feel heavy, not floaty.
+- Attacks (planned): punch, shoot, stomp, tear.
+- Enemies: crimson insectoid aliens with yellow eyes. Variants planned: standard, lurker, brute, ranged, elite.
+- Setting: a research laboratory overrun by green alien growth. Muted, gritty colours.
+- Human survivors can be rescued or killed; rescued and killed counts shown at the end of a level.
+- Planned campaign: 15 levels. Levels 3, 7 and 15 are outdoors on the planet surface, with an environmental support meter and shelters. All the others are inside the laboratory.
+- Only inventory is a weapon scroll. HUD stays minimal.
+- Pixel grid: draw at 320x180 and scale up, so everything keeps a consistent pixel-art look.
+
+## Build order
+1. Basic page with the canvas (done first).
+2. Sentinel that walks, jumps and punches.
+3. One alien that chases the player and dies with a little gore.
+4. One small room.
+5. Then the other attacks, more enemies, survivors, outdoor levels and the full 15 levels, one branch at a time.
+
+The original prompt asked for Godot; we chose plain JavaScript and canvas instead so the game stays a static site on Vercel.

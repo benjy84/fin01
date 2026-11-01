@@ -3,28 +3,74 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Lab Wars</title>
+  <title>Project Sentinel</title>
   <style>
-    /* Fill the whole window and centre the message */
+    /* Fill the whole window with a dark background and centre the game */
     html, body {
       height: 100%;
       margin: 0;
     }
     body {
       display: flex;
+      flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: #0b3d1e; /* dark green */
-      color: #e8f5e9;
-      font-family: sans-serif;
+      background: #101410;
+      color: #b8c4b0;
+      font-family: monospace;
     }
     h1 {
-      font-size: 2.5rem;
-      text-align: center;
+      margin: 0 0 12px;
+      letter-spacing: 4px;
+      text-transform: uppercase;
+      font-size: 1.5rem;
+    }
+    /* The canvas is small (320x180) and stretched up.
+       image-rendering keeps the pixels sharp instead of blurry. */
+    canvas {
+      width: min(90vw, 160vh);
+      aspect-ratio: 16 / 9;
+      image-rendering: pixelated;
+      border: 2px solid #3a463a;
+      background: #000;
+    }
+    p {
+      margin: 12px 0 0;
+      font-size: 0.85rem;
+      opacity: 0.7;
     }
   </style>
 </head>
 <body>
-  <h1>Lab Wars coming soon</h1>
+  <h1>Project Sentinel</h1>
+  <canvas id="game" width="320" height="180"></canvas>
+  <p>Work in progress - nothing to play yet</p>
+
+  <script>
+    // Get the canvas and its drawing tool (the "context")
+    const canvas = document.getElementById("game");
+    const ctx = canvas.getContext("2d");
+
+    // Draw one frame of the picture
+    function draw() {
+      // Dark laboratory wall
+      ctx.fillStyle = "#1c241e";
+      ctx.fillRect(0, 0, 320, 180);
+
+      // Metal floor
+      ctx.fillStyle = "#3a403c";
+      ctx.fillRect(0, 150, 320, 30);
+
+      // Placeholder Sentinel: a big armoured block (x, y, width, height)
+      ctx.fillStyle = "#5a665a";   // body armour
+      ctx.fillRect(140, 100, 24, 50);
+      ctx.fillStyle = "#3d4a3d";   // helmet
+      ctx.fillRect(144, 90, 16, 12);
+      ctx.fillStyle = "#101410";   // dark visor
+      ctx.fillRect(147, 94, 10, 3);
+    }
+
+    draw();
+  </script>
 </body>
 </html>
