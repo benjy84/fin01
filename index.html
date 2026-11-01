@@ -328,12 +328,14 @@
         weapon: 0,          // which weapon is selected (see WEAPONS)
         shells: 8,          // shotgun ammunition
         flash: 0,           // muzzle flash timer
-        recoil: 0           // gun kick timer
+        recoil: 0,          // gun kick timer
+        blood: []           // blood stains on the armour (see addPlayerBlood)
       };
       if (carry) {
         player.hp = carry.hp;
         player.shells = carry.shells;
         player.weapon = carry.weapon;
+        player.blood = carry.blood;         // you stay bloody from room to room
       }
       aliens = [];
       particles = [];
@@ -351,7 +353,8 @@
       loadRoom(roomIndex + 1, {
         hp: Math.min(100, player.hp + 30),
         shells: player.shells,
-        weapon: player.weapon
+        weapon: player.weapon,
+        blood: player.blood
       });
     }
 
@@ -468,6 +471,17 @@
         p.y += p.vy * dt;
         p.life -= dt;
 
+        // Blood flying through the air can land on the Sentinel and stick
+        if (!p.giblet && state === "play" &&
+            p.x > player.x - 2 && p.x < player.x + player.w + 2 &&
+            p.y > player.y && p.y < player.y + player.h) {
+          player.blood.push({ dx: Math.floor(p.x - player.x), up: Math.floor(player.y + player.h - p.y),
+                              w: 1, h: 1, color: p.color });
+          if (player.blood.length > 90) player.blood.shift();
+          particles.splice(i, 1);
+          continue;
+        }
+
         // Hit the floor: blood leaves a stain, giblets bounce then stop
         if (p.y >= FLOOR + 1) {
           if (p.giblet) {
@@ -489,7 +503,14 @@
           particles.splice(i, 1);
           continue;
         }
-        if (p.life <= 0) particles.splice(i, 1);
+        if (p.life <= 0) {
+          // Blood that was still in the air splats against the wall behind
+          if (!p.giblet && Math.random() < 0.6 && p.y < FLOOR - 1) {
+            splatCtx.fillStyle = p.color;
+            splatCtx.fillRect(Math.floor(p.x), Math.floor(p.y), 1, Math.random() < 0.3 ? 2 : 1);
+          }
+          particles.splice(i, 1);
+        }
       }
     }
 
@@ -617,12 +638,56 @@
       }
     }
 
+    // ---------- Blood on the Sentinel and on the walls ----------
+    // Stains on the Sentinel are a list of tiny dots. Each dot remembers how far
+    // across the body it is (dx) and how far up from the feet (up), so it moves
+    // with the Sentinel. "side" is which way the blood came from (-1, 0 or 1).
+    function addPlayerBlood(count, side) {
+      const p = player;
+      for (let i = 0; i < count; i++) {
+        let dx = Math.random() * 24;
+        if (side > 0) dx = 8 + Math.random() * 18;         // lean towards the side it came from
+        if (side < 0) dx = -2 + Math.random() * 18;
+        p.blood.push({
+          dx: Math.floor(dx),
+          up: 2 + Math.floor(Math.random() * 47),
+          w: Math.random() < 0.3 ? 2 : 1,
+          h: Math.random() < 0.3 ? 2 : 1,
+          color: ["#7a0c0c", "#a01010", "#c42020"][Math.floor(Math.random() * 3)]
+        });
+      }
+      if (p.blood.length > 90) p.blood.splice(0, p.blood.length - 90);   // keep it light
+    }
+
+    // Splatter on the wall behind an alien that has just died, with a few drips
+    function wallSplash(x, y, dir, big) {
+      const spots = big ? 40 : 22;
+      for (let i = 0; i < spots; i++) {
+        const sx = Math.floor(x + dir * (4 + Math.random() * 40) + (Math.random() - 0.5) * 24);
+        const sy = Math.floor(y - Math.random() * 40);
+        if (sx < 0 || sx >= W || sy < 0 || sy >= FLOOR - 1) continue;
+        const size = Math.random() < 0.25 ? 3 : (Math.random() < 0.5 ? 2 : 1);
+        splatCtx.fillStyle = ["#7a0c0c", "#a01010", "#c42020"][Math.floor(Math.random() * 3)];
+        splatCtx.fillRect(sx, sy, size, size);
+        if (Math.random() < 0.3) {                          // a drip running down the wall
+          splatCtx.fillStyle = "#7a0c0c";
+          splatCtx.fillRect(sx, sy + size, 1, Math.max(0, Math.min(3 + Math.floor(Math.random() * 7), FLOOR - 1 - sy - size)));
+        }
+      }
+    }
+
     // Kill an alien (used by punches and by the shotgun)
     function killAlien(index, dir) {
       const a = aliens[index];
       sfx.alienDie();
       spawnGore(a.x + a.w / 2, a.y + a.h / 2, dir);   // gore flies away from the hit
       if (a.brute) spawnGore(a.x + a.w / 2, a.y + a.h / 2, dir);   // brutes make twice the mess
+      wallSplash(a.x + a.w / 2, a.y, dir || 1, a.brute);           // blood on the wall behind
+      // A close kill sprays blood onto the Sentinel too (the closer, the more)
+      const centre = a.x + a.w / 2 - (player.x + player.w / 2);
+      if (Math.abs(centre) < 60) {
+        addPlayerBlood(2 + Math.round((60 - Math.abs(centre)) / 60 * (a.brute ? 26 : 14)), Math.sign(centre));
+      }
       aliens.splice(index, 1);
       killed++;
       // Sometimes it drops a box of shotgun shells (brutes nearly always do)
@@ -822,6 +887,7 @@
           } else {
             killAlien(i, 1);                                // blood sprays out to the right...
             spawnGore(a.x + a.w / 2, a.y + a.h / 2, -1);    // ...and to the left
+            wallSplash(a.x + a.w / 2, a.y, -1, true);       // a squashed alien splatters the wall too
           }
           for (let k = 0; a.hp <= 0 && k < 14; k++) {       // a puddle on the floor
             splatCtx.fillStyle = Math.random() < 0.5 ? "#8a1010" : "#a01010";
@@ -876,7 +942,7 @@
       for (const pl of platforms) drawPlatform(pl);
       drawPickups();
       for (const a of aliens) drawAlien(a);
-      if (state !== "dead") drawSentinel();
+      if (state !== "dead") { drawSentinel(); drawPlayerBlood(); }
       drawParticles();
       drawPellets();
       ctx.restore();
@@ -1224,6 +1290,18 @@
       for (const p of particles) {
         ctx.fillStyle = p.color;
         ctx.fillRect(Math.round(p.x), Math.round(p.y), p.size, p.size);
+      }
+    }
+
+    // Blood stains on the Sentinel's armour, drawn on top of the body
+    function drawPlayerBlood() {
+      const p = player;
+      if (p.hurtTime > 0 && Math.floor(p.hurtTime * 20) % 2 === 0) return;   // hidden while the Sentinel flashes
+      const x = Math.round(p.x), feet = Math.round(p.y + p.h);
+      for (const b of p.blood) {
+        if (b.up > p.h) continue;                // stains up high are hidden while crouching
+        ctx.fillStyle = b.color;
+        ctx.fillRect(x + b.dx, feet - b.up, b.w, b.h);
       }
     }
 
