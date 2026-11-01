@@ -44,7 +44,7 @@
 <body>
   <h1>Project Sentinel</h1>
   <canvas id="game" width="320" height="180"></canvas>
-  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; J or click = punch &nbsp; R = restart</p>
+  <p>A / D or arrows = move &nbsp; W / Space = jump &nbsp; C = crouch &nbsp; J or click = punch &nbsp; R = restart</p>
 
   <script>
     // =====================================================
@@ -59,6 +59,8 @@
     const H = 180;          // game height in pixels
     const FLOOR = 150;      // y position of the top of the floor
     const ALIENS_TO_KILL = 8; // kill this many to clear the room
+    const STAND_HEIGHT = 50;  // how tall the Sentinel is standing...
+    const CROUCH_HEIGHT = 32; // ...and crouching
 
     // A second, invisible canvas that remembers blood on the floor and walls.
     // Blood is drawn on it once and stays there, which keeps the game fast.
@@ -66,6 +68,18 @@
     splat.width = W;
     splat.height = H;
     const splatCtx = splat.getContext("2d");
+
+    // A third canvas holds the dark edges of the screen (the "vignette").
+    // It is drawn once here, then pasted on top every frame.
+    const vignette = document.createElement("canvas");
+    vignette.width = W;
+    vignette.height = H;
+    const vctx = vignette.getContext("2d");
+    const fade = vctx.createRadialGradient(W / 2, H / 2, 70, W / 2, H / 2, 210);
+    fade.addColorStop(0, "rgba(0,0,0,0)");
+    fade.addColorStop(1, "rgba(0,0,0,0.6)");
+    vctx.fillStyle = fade;
+    vctx.fillRect(0, 0, W, H);
 
     // ---------- Keyboard and mouse ----------
     const keys = {};        // keys[name] is true while that key is held down
@@ -93,7 +107,10 @@
     });
 
     // ---------- Game state ----------
-    let player, aliens, particles, state, killed, spawnTimer, hitStop, shake;
+    let player, aliens, particles, state, killed, spawnTimer, hitStop;
+    let shake = 0;          // how long the screen shakes for (seconds)
+    let shakePower = 0;     // how hard it shakes (pixels)
+    let animTime = 0;       // keeps counting up, used for flickering and dripping
 
     // Platforms you can jump onto (you can jump up through them)
     const platforms = [
@@ -104,10 +121,11 @@
     // Start (or restart) everything
     function startGame() {
       player = {
-        x: 148, y: FLOOR - 50, w: 24, h: 50,
+        x: 148, y: FLOOR - STAND_HEIGHT, w: 24, h: STAND_HEIGHT,
         vx: 0, vy: 0,
         facing: 1,          // 1 = looking right, -1 = looking left
         onGround: true,
+        crouching: false,
         hp: 100,
         punchTime: 0,       // counts up while punching
         punchCooldown: 0,
@@ -121,6 +139,14 @@
       shake = 0;
       state = "play";       // "play", "dead" or "cleared"
       splatCtx.clearRect(0, 0, W, H);
+    }
+
+    // Shake the screen. A stronger shake replaces a weaker one.
+    function addShake(time, power) {
+      if (shake <= 0 || power >= shakePower) {
+        shake = time;
+        shakePower = power;
+      }
     }
 
     // ---------- Aliens ----------
@@ -138,8 +164,8 @@
       });
     }
 
-    // ---------- Gore ----------
-    // Particles are tiny bits of blood or body parts (giblets).
+    // ---------- Gore and dust ----------
+    // Particles are tiny bits of blood, body parts (giblets) or dust.
     function spawnGore(x, y, dir) {
       // small blood droplets
       for (let i = 0; i < 25; i++) {
@@ -169,9 +195,36 @@
       if (particles.length > 400) particles.splice(0, particles.length - 400);
     }
 
+    // A puff of dust, used when the Sentinel jumps and lands
+    function spawnDust(x, y, count) {
+      for (let i = 0; i < count; i++) {
+        const side = i % 2 === 0 ? -1 : 1;
+        particles.push({
+          x: x + side * (2 + Math.random() * 6), y: y,
+          vx: side * (10 + Math.random() * 30),
+          vy: -Math.random() * 14,
+          life: 0.3 + Math.random() * 0.25,
+          size: 1,
+          color: Math.random() < 0.5 ? "#5a625a" : "#7a827a",
+          dust: true
+        });
+      }
+    }
+
     function updateParticles(dt) {
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
+
+        // Dust just drifts and fades away
+        if (p.dust) {
+          p.x += p.vx * dt;
+          p.y += p.vy * dt;
+          p.vx *= 0.95;
+          p.life -= dt;
+          if (p.life <= 0) particles.splice(i, 1);
+          continue;
+        }
+
         p.vy += 500 * dt;           // gravity
         p.x += p.vx * dt;
         p.y += p.vy * dt;
@@ -234,8 +287,18 @@
       const right = keys["KeyD"] || keys["ArrowRight"];
       const jump = keys["KeyW"] || keys["ArrowUp"] || keys["Space"];
 
+      // Crouching (hold C while on the ground). The feet stay where they are
+      // and the Sentinel just gets shorter.
+      const wantCrouch = !!keys["KeyC"] && p.onGround;
+      if (wantCrouch !== p.crouching) {
+        const feet = p.y + p.h;
+        p.crouching = wantCrouch;
+        p.h = wantCrouch ? CROUCH_HEIGHT : STAND_HEIGHT;
+        p.y = feet - p.h;
+      }
+
       // Walking: speed up and slow down gradually so the Sentinel feels heavy
-      const maxSpeed = 80;
+      const maxSpeed = p.crouching ? 35 : 80;   // crouch-walking is slow
       if (left && !right)       { p.vx -= 500 * dt; p.facing = -1; }
       else if (right && !left)  { p.vx += 500 * dt; p.facing = 1; }
       else {
@@ -246,10 +309,17 @@
       p.vx = Math.max(-maxSpeed, Math.min(maxSpeed, p.vx));
 
       // Jumping (heavy: strong gravity, so it is a short, quick hop)
-      if (jump && p.onGround) { p.vy = -330; p.onGround = false; }
+      if (jump && p.onGround) {
+        p.vy = -330;
+        p.onGround = false;
+        addShake(0.06, 1);                                  // small shake on take-off
+        spawnDust(p.x + p.w / 2, p.y + p.h, 6);
+      }
       p.vy += 1100 * dt;
 
       // Move
+      const wasOnGround = p.onGround;
+      const fallSpeed = p.vy;                // how fast we were falling (for the landing)
       const oldBottom = p.y + p.h;
       p.x += p.vx * dt;
       p.y += p.vy * dt;
@@ -266,6 +336,12 @@
             p.y = pl.y - p.h; p.vy = 0; p.onGround = true;
           }
         }
+      }
+
+      // Just landed? Shake the screen (harder for a longer fall) and kick up dust
+      if (p.onGround && !wasOnGround && fallSpeed > 120) {
+        addShake(0.12, fallSpeed > 300 ? 2 : 1);
+        spawnDust(p.x + p.w / 2, p.y + p.h, 10);
       }
 
       // Punching: wind-up, then a short moment where the fist can hit
@@ -306,7 +382,7 @@
             killed++;
           }
           hitStop = 0.06;                   // brief freeze = punch feels powerful
-          shake = 0.15;
+          addShake(0.15, 2);
         }
       }
     }
@@ -326,7 +402,7 @@
           p.hurtTime = 0.5;
           a.attackCooldown = 0.8;
           p.vx = Math.sign(dx) * -60;    // small shove (the Sentinel is heavy, so it is small)
-          shake = 0.1;
+          addShake(0.1, 2);
         }
       }
     }
@@ -340,7 +416,10 @@
     // ---------- Drawing (runs every frame) ----------
     function draw() {
       ctx.save();
-      if (shake > 0) ctx.translate(Math.round((Math.random() - 0.5) * 4), Math.round((Math.random() - 0.5) * 4));
+      if (shake > 0) {
+        const s = shakePower * 2;
+        ctx.translate(Math.round((Math.random() - 0.5) * s), Math.round((Math.random() - 0.5) * s));
+      }
 
       drawBackground();
       ctx.drawImage(splat, 0, 0);          // blood stains
@@ -350,23 +429,77 @@
       drawParticles();
       ctx.restore();
 
+      ctx.drawImage(vignette, 0, 0);       // dark edges, so the room feels gloomy
       drawHud();
     }
 
     function drawBackground() {
-      // Dark laboratory wall
-      ctx.fillStyle = "#1c241e";
-      ctx.fillRect(0, 0, W, H);
-      // Wall panels
-      ctx.fillStyle = "#18201a";
-      for (let x = 0; x < W; x += 64) ctx.fillRect(x, 0, 2, FLOOR);
-      // A dark window
-      ctx.fillStyle = "#0c120e";
-      ctx.fillRect(110, 30, 100, 40);
+      // Wall: darker at the top, lighter lower down (drawn in five bands)
+      const bands = ["#141b16", "#182019", "#1c241e", "#202a22", "#242e26"];
+      for (let i = 0; i < bands.length; i++) {
+        ctx.fillStyle = bands[i];
+        ctx.fillRect(0, i * 30, W, 30);
+      }
+
+      // Wall panels with seams and rivets
+      for (let x = 0; x < W; x += 64) {
+        ctx.fillStyle = "#101712";
+        ctx.fillRect(x, 0, 2, FLOOR);
+        ctx.fillStyle = "#2a352d";
+        ctx.fillRect(x + 2, 0, 1, FLOOR);
+        ctx.fillStyle = "#2c382f";
+        for (let y = 40; y < FLOOR; y += 36) {
+          ctx.fillRect(x + 8, y, 2, 2);
+          ctx.fillRect(x + 54, y, 2, 2);
+        }
+      }
+
+      // A pipe running along the wall
+      ctx.fillStyle = "#222c25";
+      ctx.fillRect(0, 22, W, 6);
+      ctx.fillStyle = "#38453b";
+      ctx.fillRect(0, 22, W, 1);
+      ctx.fillStyle = "#161d18";
+      ctx.fillRect(0, 27, W, 1);
+      ctx.fillStyle = "#2c382f";
+      for (let x = 20; x < W; x += 56) ctx.fillRect(x, 20, 4, 10);   // pipe joints
+
+      // Observation window, with a glowing alien nest inside
       ctx.fillStyle = "#26302a";
-      ctx.fillRect(110, 30, 100, 2);
-      ctx.fillRect(158, 30, 4, 40);
-      // Green alien growth hanging from the ceiling, with slime drips
+      ctx.fillRect(108, 38, 104, 46);
+      ctx.fillStyle = "#0a100c";
+      ctx.fillRect(110, 40, 100, 42);
+      ctx.fillStyle = "#12261a";
+      ctx.fillRect(110, 66, 100, 16);
+      const glow = 0.5 + 0.5 * Math.sin(animTime * 2);     // slow pulsing
+      ctx.fillStyle = glow > 0.5 ? "#2f6a2a" : "#285a24";
+      ctx.fillRect(130, 60, 12, 14);
+      ctx.fillRect(150, 54, 14, 20);
+      ctx.fillRect(176, 62, 10, 12);
+      ctx.fillStyle = "#4c9a3c";
+      ctx.fillRect(154, 56, 3, 3);
+      ctx.fillStyle = "#e8c020";                            // a yellow eye in the dark
+      ctx.fillRect(194, 50, 2, 2);
+      ctx.fillStyle = "#26302a";
+      ctx.fillRect(158, 40, 4, 42);                         // window frame
+      ctx.fillStyle = "#3a463a";
+      ctx.fillRect(110, 40, 100, 1);                        // glass shine
+
+      // Computer terminal on the left, with a flickering screen
+      ctx.fillStyle = "#222c25";
+      ctx.fillRect(8, 118, 22, 32);
+      ctx.fillStyle = "#0a100c";
+      ctx.fillRect(11, 121, 16, 12);
+      ctx.fillStyle = Math.sin(animTime * 9) > -0.6 ? "#2f8a3a" : "#1a4a20";
+      ctx.fillRect(13, 124, 8, 1);
+      ctx.fillRect(13, 127, 11, 1);
+      ctx.fillRect(13, 130, 6, 1);
+      ctx.fillStyle = "#38453b";
+      ctx.fillRect(8, 118, 22, 1);
+      ctx.fillStyle = "#a01010";                            // warning light
+      ctx.fillRect(25, 138, 2, 2);
+
+      // Green alien growth hanging from the ceiling
       ctx.fillStyle = "#2f6a2a";
       for (let x = 0; x < W; x += 20) {
         const len = 8 + ((x * 7) % 23);
@@ -375,19 +508,49 @@
       }
       ctx.fillStyle = "#4c9a3c";
       for (let x = 10; x < W; x += 40) ctx.fillRect(x, 0, 3, 6 + ((x * 3) % 10));
-      // Metal floor
+
+      // Slime drips falling from the growth
+      ctx.fillStyle = "#6ac04a";
+      for (let i = 0; i < 4; i++) {
+        const dripX = 52 + i * 70;
+        const dripY = (animTime * 45 + i * 41) % (FLOOR - 24) + 24;
+        ctx.fillRect(dripX, Math.round(dripY), 1, 2);
+      }
+
+      // Warning stripe along the bottom of the wall
+      for (let x = 0; x < W; x += 16) {
+        ctx.fillStyle = "#8a7a20";
+        ctx.fillRect(x, FLOOR - 5, 8, 4);
+        ctx.fillStyle = "#1a1a14";
+        ctx.fillRect(x + 8, FLOOR - 5, 8, 4);
+      }
+
+      // Metal floor: plates with seams and a grating strip
       ctx.fillStyle = "#3a403c";
       ctx.fillRect(0, FLOOR, W, H - FLOOR);
-      ctx.fillStyle = "#4a524c";
+      ctx.fillStyle = "#555e57";
       ctx.fillRect(0, FLOOR, W, 1);
+      ctx.fillStyle = "#2a302c";
+      for (let x = 0; x < W; x += 32) ctx.fillRect(x, FLOOR + 1, 1, H - FLOOR);
+      ctx.fillStyle = "#2a302c";
+      ctx.fillRect(0, FLOOR + 14, W, 1);
+      for (let x = 0; x < W; x += 4) ctx.fillRect(x, FLOOR + 20, 2, 8);   // grating
     }
 
     function drawPlatform(pl) {
-      ctx.fillStyle = "#4a524c";
+      ctx.fillStyle = "#1a201a";              // dark underside / shadow
+      ctx.fillRect(pl.x, pl.y + 4, pl.w, 2);
+      ctx.fillStyle = "#4a524c";              // metal body
       ctx.fillRect(pl.x, pl.y, pl.w, 4);
-      ctx.fillStyle = "#2f6a2a";             // green growth on top
+      ctx.fillStyle = "#6a746c";              // bright top edge
+      ctx.fillRect(pl.x, pl.y, pl.w, 1);
+      ctx.fillStyle = "#2a302c";              // rivets
+      for (let x = pl.x + 4; x < pl.x + pl.w - 2; x += 10) ctx.fillRect(x, pl.y + 2, 2, 1);
+      ctx.fillStyle = "#2f6a2a";              // green growth on top and hanging below
       ctx.fillRect(pl.x + 4, pl.y - 1, 14, 1);
       ctx.fillRect(pl.x + pl.w - 20, pl.y - 1, 10, 1);
+      ctx.fillRect(pl.x + 10, pl.y + 6, 2, 5);
+      ctx.fillRect(pl.x + pl.w - 14, pl.y + 6, 2, 8);
     }
 
     function drawSentinel() {
@@ -395,41 +558,130 @@
       // Flash when hurt
       if (p.hurtTime > 0 && Math.floor(p.hurtTime * 20) % 2 === 0) return;
       const x = Math.round(p.x), y = Math.round(p.y);
-      ctx.fillStyle = "#3d4a3d";   // legs
-      ctx.fillRect(x + 3, y + 36, 8, 14);
-      ctx.fillRect(x + 13, y + 36, 8, 14);
-      ctx.fillStyle = "#5a665a";   // body armour
-      ctx.fillRect(x, y + 12, 24, 26);
-      ctx.fillStyle = "#74827a";   // shoulder plates
-      ctx.fillRect(x - 2, y + 12, 8, 8);
-      ctx.fillRect(x + 18, y + 12, 8, 8);
-      ctx.fillStyle = "#3d4a3d";   // helmet
+      const crouch = p.crouching;
+      const feet = y + p.h;
+      const legTop = crouch ? y + 22 : y + 36;
+      const torsoTop = crouch ? y + 9 : y + 12;
+      const torsoH = legTop - torsoTop + 2;
+
+      // Shadow on the ground
+      ctx.fillStyle = "rgba(0,0,0,0.4)";
+      ctx.fillRect(x - 2, feet - 1, 28, 2);
+
+      // Legs (dark outline, then armour, knee pad and boot)
+      ctx.fillStyle = "#1a201a";
+      ctx.fillRect(x + 2, legTop, 10, feet - legTop);
+      ctx.fillRect(x + 12, legTop, 10, feet - legTop);
+      ctx.fillStyle = "#3d4a3d";
+      ctx.fillRect(x + 3, legTop, 8, feet - legTop - 1);
+      ctx.fillRect(x + 13, legTop, 8, feet - legTop - 1);
+      ctx.fillStyle = "#5a665a";
+      ctx.fillRect(x + 4, legTop + (crouch ? 1 : 3), 6, 2);
+      ctx.fillRect(x + 14, legTop + (crouch ? 1 : 3), 6, 2);
+      ctx.fillStyle = "#1a201a";
+      ctx.fillRect(x + 2, feet - 3, 10, 3);
+      ctx.fillRect(x + 12, feet - 3, 10, 3);
+
+      // Torso: outline, armour, bright top, dark bottom, chest plate
+      ctx.fillStyle = "#1a201a";
+      ctx.fillRect(x - 1, torsoTop - 1, 26, torsoH + 2);
+      ctx.fillStyle = "#5a665a";
+      ctx.fillRect(x, torsoTop, 24, torsoH);
+      ctx.fillStyle = "#74827a";
+      ctx.fillRect(x, torsoTop, 24, 2);
+      ctx.fillStyle = "#3d4a3d";
+      ctx.fillRect(x, torsoTop + torsoH - 3, 24, 3);
+      ctx.fillStyle = "#3f5a3f";
+      ctx.fillRect(x + 6, torsoTop + 4, 12, torsoH - 9);
+      ctx.fillStyle = "#6a8a5a";
+      ctx.fillRect(x + 6, torsoTop + 4, 12, 1);
+      ctx.fillStyle = "#c8b840";               // little status light
+      ctx.fillRect(x + 11, torsoTop + 6, 2, 2);
+
+      // Shoulder plates
+      ctx.fillStyle = "#1a201a";
+      ctx.fillRect(x - 4, torsoTop - 1, 10, 11);
+      ctx.fillRect(x + 18, torsoTop - 1, 10, 11);
+      ctx.fillStyle = "#74827a";
+      ctx.fillRect(x - 3, torsoTop, 8, 9);
+      ctx.fillRect(x + 19, torsoTop, 8, 9);
+      ctx.fillStyle = "#8a9890";
+      ctx.fillRect(x - 3, torsoTop, 8, 2);
+      ctx.fillRect(x + 19, torsoTop, 8, 2);
+
+      // Helmet and glowing visor (on the side the Sentinel faces)
+      ctx.fillStyle = "#1a201a";
+      ctx.fillRect(x + 3, y - 1, 18, 16);
+      ctx.fillStyle = "#3d4a3d";
       ctx.fillRect(x + 4, y, 16, 14);
-      ctx.fillStyle = "#101410";   // visor (on the side the Sentinel faces)
-      ctx.fillRect(p.facing === 1 ? x + 10 : x + 5, y + 4, 9, 3);
-      // Fist: shoots out in front while punching
+      ctx.fillStyle = "#5a665a";
+      ctx.fillRect(x + 4, y, 16, 2);
+      const visorX = p.facing === 1 ? x + 11 : x + 4;
+      ctx.fillStyle = "#101410";
+      ctx.fillRect(visorX, y + 4, 9, 4);
+      ctx.fillStyle = "#3aa04a";
+      ctx.fillRect(visorX + 1, y + 5, 7, 1);
+
+      // Arm and fist: the fist shoots out in front while punching
       let reach = 0;
       if (p.punchTime > 0) reach = p.punchTime > 0.06 && p.punchTime < 0.18 ? 22 : 8;
-      ctx.fillStyle = "#74827a";
+      const fistY = crouch ? y + 14 : y + 18;
       const fistX = p.facing === 1 ? x + 22 + reach : x + 2 - reach - 6;
-      ctx.fillRect(fistX, y + 18, 8, 8);
+      ctx.fillStyle = "#3d4a3d";
+      if (p.facing === 1) ctx.fillRect(x + 20, fistY + 2, reach + 4, 4);
+      else ctx.fillRect(fistX + 6, fistY + 2, reach + 4, 4);
+      ctx.fillStyle = "#1a201a";
+      ctx.fillRect(fistX - 1, fistY - 1, 10, 10);
+      ctx.fillStyle = "#74827a";
+      ctx.fillRect(fistX, fistY, 8, 8);
+      ctx.fillStyle = "#8a9890";
+      ctx.fillRect(fistX, fistY, 8, 2);
     }
 
     function drawAlien(a) {
       const x = Math.round(a.x), y = Math.round(a.y);
       const step = Math.floor(a.wobble) % 2;         // makes the legs shuffle
-      const face = player.x + player.w / 2 > a.x + a.w / 2 ? 1 : -1;
-      ctx.fillStyle = "#7a0c0c";                      // legs and claws
-      ctx.fillRect(x + 1 + step, y + 10, 2, 4);
-      ctx.fillRect(x + 6 - step, y + 10, 2, 4);
-      ctx.fillRect(x + 11 + step, y + 10, 2, 4);
+      const f = player.x + player.w / 2 > a.x + a.w / 2 ? 1 : -1;   // which way it faces
+
+      ctx.fillStyle = "rgba(0,0,0,0.4)";              // shadow
+      ctx.fillRect(x, y + 13, 16, 2);
+
+      ctx.fillStyle = "#5a0808";                      // long bent legs
+      ctx.fillRect(x + 1 + step, y + 9, 2, 5);
+      ctx.fillRect(x + 5 - step, y + 9, 2, 5);
+      ctx.fillRect(x + 9 + step, y + 9, 2, 5);
+      ctx.fillRect(x + 13 - step, y + 9, 2, 5);
+      ctx.fillStyle = "#d8d0b8";                      // claws
+      ctx.fillRect(x + 1 + step, y + 13, 1, 1);
+      ctx.fillRect(x + 5 - step, y + 13, 1, 1);
+      ctx.fillRect(x + 9 + step, y + 13, 1, 1);
+      ctx.fillRect(x + 13 - step, y + 13, 1, 1);
+
+      ctx.fillStyle = "#5a0808";                      // spines along the back
+      for (let k = 0; k < 3; k++) {
+        ctx.fillRect(f === 1 ? x + 1 + k * 3 : x + 14 - k * 3, y + 1 + (k % 2), 1, 3);
+      }
+
+      ctx.fillStyle = "#8a1010";                      // body outline
+      ctx.fillRect(x, y + 3, 16, 8);
       ctx.fillStyle = "#c42020";                      // body
-      ctx.fillRect(x + 1, y + 4, 14, 7);
-      ctx.fillRect(face === 1 ? x + 10 : x, y + 1, 6, 7);  // head
-      ctx.fillStyle = "#e8c020";                      // yellow eye
-      ctx.fillRect(face === 1 ? x + 13 : x + 2, y + 3, 2, 2);
-      ctx.fillStyle = "#e0e0d0";                      // front claw
-      ctx.fillRect(face === 1 ? x + 16 : x - 2, y + 8, 2, 2);
+      ctx.fillRect(x + 1, y + 4, 14, 6);
+      ctx.fillStyle = "#e04040";                      // highlight on top
+      ctx.fillRect(x + 2, y + 4, 12, 1);
+      ctx.fillStyle = "#7a0c0c";                      // shaded underside
+      ctx.fillRect(x + 1, y + 9, 14, 1);
+
+      const headX = f === 1 ? x + 10 : x;             // head
+      ctx.fillStyle = "#8a1010";
+      ctx.fillRect(headX, y, 6, 8);
+      ctx.fillStyle = "#c42020";
+      ctx.fillRect(headX + 1, y + 1, 4, 6);
+      ctx.fillStyle = "#d8d0b8";                      // mandibles
+      ctx.fillRect(f === 1 ? headX + 6 : headX - 2, y + 6, 2, 2);
+      ctx.fillStyle = "#f8d820";                      // glowing yellow eye
+      ctx.fillRect(f === 1 ? headX + 3 : headX + 1, y + 2, 2, 2);
+      ctx.fillStyle = "#fff8b0";
+      ctx.fillRect(f === 1 ? headX + 4 : headX + 1, y + 2, 1, 1);
     }
 
     function drawParticles() {
@@ -440,11 +692,16 @@
     }
 
     function drawHud() {
-      // Health bar
+      // Health bar (turns red when low)
+      ctx.fillStyle = "#3a463a";
+      ctx.fillRect(5, 5, 64, 10);
       ctx.fillStyle = "#000";
       ctx.fillRect(6, 6, 62, 8);
-      ctx.fillStyle = "#3a6a2a";
+      ctx.fillStyle = player.hp > 35 ? "#4a9a3a" : "#c42020";
       ctx.fillRect(8, 8, Math.round(58 * player.hp / 100), 4);
+      ctx.fillStyle = "rgba(255,255,255,0.25)";
+      ctx.fillRect(8, 8, Math.round(58 * player.hp / 100), 1);
+
       // Kill counter
       ctx.fillStyle = "#b8c4b0";
       ctx.font = "8px monospace";
@@ -470,6 +727,7 @@
     function loop(now) {
       const dt = Math.min((now - lastTime) / 1000, 0.05);  // seconds since last frame
       lastTime = now;
+      animTime += dt;
       update(dt);
       draw();
       requestAnimationFrame(loop);
